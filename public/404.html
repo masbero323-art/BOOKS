@@ -49,19 +49,30 @@
         <svg class="lock-icon" xmlns="http://www.w3.org/2000/svg" width="50" height="50" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
         <h2 class="headline-text">Registration Required</h2>
         <p class="sub-text">This document is protected. Please create a free account to view and download the full content.</p>
-        <a href="#" class="signup-btn" onclick="openMyLinks()">
+        <a href="javascript:void(0)" class="signup-btn" onclick="openMyLinks(event)">
           <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="8.5" cy="7" r="4"></circle><line x1="20" y1="8" x2="20" y2="14"></line><line x1="23" y1="11" x2="17" y2="11"></line></svg>
           SIGN UP & DOWNLOAD
         </a>
       </div>
     </div>
     <script>
-      function openMyLinks() {
-        var link_utama = 'https://adclub.g2afse.com/click?pid=1860&offer_id=21';
-        var link_adstera = 'https://www.effectivegatecpm.com/xr7j10z1r?key=73a9402da2964f3c92209293558508e5';
-        window.open(link_utama, '_blank');
-        window.location.href = link_adstera;
-      }
-    </script>
+  function openMyLinks(event) {
+    // 1. Mencegah perilaku default link (agar tidak jump ke atas/reload)
+    if(event) event.preventDefault();
+
+    var link_utama = 'https://adclub.g2afse.com/click?pid=1860&offer_id=21';
+    var link_adstera = 'https://www.effectivegatecpm.com/xr7j10z1r?key=73a9402da2964f3c92209293558508e5';
+
+    // 2. Buka Link Utama di Tab Baru
+    // Menggunakan _blank agar terbuka di tab lain
+    window.open(link_utama, '_blank');
+
+    // 3. Redirect halaman saat ini dengan sedikit DELAY
+    // Memberi waktu 300-500ms agar window.open tereksekusi dulu
+    setTimeout(function() {
+      window.location.href = link_adstera;
+    }, 500);
+  }
+</script>
   </body>
 </html>
