@@ -1,6 +1,6 @@
 // Hardcode: /functions/post/[id].js
 
-// --- 1. FUNGSI UTILITY (TRUNCATE) ---
+// --- 1. FUNGSI UTILITY ---
 function truncate(str, length = 200) {
   if (!str) return "";
   const cleanStr = str.replace(/<[^>]*>?/gm, "");
@@ -8,20 +8,102 @@ function truncate(str, length = 200) {
   return cleanStr.substring(0, length) + "...";
 }
 
-// --- 2. FUNGSI DATABASE (LOKAL) ---
+// Helper untuk mengambil item acak dari array
+function getRandomItem(arr) {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+// --- 2. FUNGSI TEXT SPINNING (TEMPLATE GENERATOR) ---
+function generateSpunDescription(title, author, isbn) {
+  // Database Kata-kata (Sinonim)
+  const intros = [
+    "You are currently viewing the detail page for",
+    "Here you can download the full version of",
+    "Get instant access to",
+    "Read the complete digital edition of",
+    "Download the unabridged ebook of"
+  ];
+  
+  const formats = [
+    "PDF and ePub formats",
+    "high-quality PDF",
+    "digital scanned copy",
+    "electronic document format",
+    "mobile-friendly ebook format"
+  ];
+  
+  const actions = [
+    "available for direct download",
+    "ready to be read online",
+    "uploaded for archival purposes",
+    "accessible for registered members",
+    "stored in our secure library"
+  ];
+
+  const qualities = [
+    "This file has been verified for quality.",
+    "The content is scanned from the original edition.",
+    "Fully optimized for reading on tablets and smartphones.",
+    "Complete with original illustrations and references.",
+    "Clean digital copy with searchable text."
+  ];
+
+  const connectives = [
+    "Written by the renowned author",
+    "Authored by",
+    "A masterpiece by",
+    "From the desk of",
+    "Created by"
+  ];
+
+  const sources = [
+    "Open Library Archive",
+    "Public Digital Repository",
+    "Global Book Index",
+    "Universal Document Library"
+  ];
+
+  // Random Data Generator (Biar terlihat teknis)
+  const randomSize = (Math.random() * (15 - 2) + 2).toFixed(1); // 2.0MB - 15.0MB
+  const randomPages = Math.floor(Math.random() * (800 - 150) + 150); // 150 - 800 pages
+
+  // --- MERAKIT KALIMAT (SPINNING) ---
+  
+  // Paragraf 1: Intro & Availability
+  const sentence1 = `${getRandomItem(intros)} <strong>"${title}"</strong>.`;
+  const sentence2 = `${getRandomItem(connectives)} <strong>${author}</strong>, this document is ${getRandomItem(actions)} in ${getRandomItem(formats)}.`;
+  
+  // Paragraf 2: Technical Specs (Metadata)
+  const sentence3 = `
+    <br><br>
+    <strong>Document Details:</strong><br>
+    - <strong>Title:</strong> ${title}<br>
+    - <strong>Author:</strong> ${author}<br>
+    - <strong>ISBN/ID:</strong> ${isbn}<br>
+    - <strong>File Size:</strong> ${randomSize} MB<br>
+    - <strong>Pages:</strong> ${randomPages} pages (approx)<br>
+    - <strong>Source:</strong> ${getRandomItem(sources)}<br>
+  `;
+
+  // Paragraf 3: Closing & Verification
+  const sentence4 = `<br>${getRandomItem(qualities)} Please follow the instructions to verify your access and download the full document.`;
+
+  return `${sentence1} ${sentence2} ${sentence3} ${sentence4}`;
+}
+
+// --- 3. FUNGSI DATABASE (LOKAL) ---
 async function getPost(db, id) {
   const stmt = db.prepare("SELECT * FROM Buku WHERE KodeUnik = ?").bind(id);
   const result = await stmt.first();
   return result;
 }
 
-// --- 3. FUNGSI EXTERNAL: AUTO GENERATE DARI OPENLIBRARY ---
+// --- 4. FUNGSI EXTERNAL: AUTO GENERATE DARI OPENLIBRARY ---
 async function getOpenLibraryData(isbn) {
   try {
-    // Membersihkan ID dari URL (misal: "B-12345" menjadi "12345")
     const cleanIsbn = isbn.replace(/[^0-9X]/gi, "");
     
-    // Request ke OpenLibrary (Tanpa API Key)
+    // Request ke OpenLibrary
     const url = `https://openlibrary.org/api/books?bibkeys=ISBN:${cleanIsbn}&jscmd=data&format=json`;
     const response = await fetch(url, {
       method: "GET",
@@ -36,36 +118,47 @@ async function getOpenLibraryData(isbn) {
 
     if (!bookData) return null;
 
-    // --- MAPPING DATA AGAR SESUAI STRUKTUR DATABASE ---
+    // --- MAPPING DATA ---
     
-    // 1. Ambil Deskripsi (Cari di excerpts, lalu notes, atau default text)
-    let description = "Description not available for this title. Please download the full document to read more.";
+    let authorName = "Unknown Author";
+    if (bookData.authors && bookData.authors.length > 0) {
+      authorName = bookData.authors[0].name;
+    }
+    const title = bookData.title || "Document Archive";
+
+    // 1. Ambil Deskripsi Asli (Kalau ada)
+    let realDescription = "";
     if (bookData.excerpts && bookData.excerpts.length > 0) {
-      description = bookData.excerpts[0].text;
+      realDescription = bookData.excerpts[0].text;
     } else if (bookData.notes) {
-      description = bookData.notes;
+      realDescription = typeof bookData.notes === 'string' ? bookData.notes : bookData.notes.value;
     }
 
-    // 2. Ambil Cover (Prioritas: Large -> Medium -> Small)
+    // 2. Generate Template Text (Spinning)
+    const templateText = generateSpunDescription(title, authorName, cleanIsbn);
+
+    // 3. Gabungkan: Deskripsi Asli (jika ada) + Template Text
+    // Jika deskripsi asli pendek, template text sangat membantu.
+    let finalDescription;
+    if (realDescription.length > 50) {
+        finalDescription = `<p>${realDescription}</p><hr>${templateText}`;
+    } else {
+        finalDescription = templateText;
+    }
+
+    // Ambil Cover
     let coverUrl = null;
     if (bookData.cover) {
       coverUrl = bookData.cover.large || bookData.cover.medium || bookData.cover.small;
     }
 
-    // 3. Ambil Author
-    let authorName = "Unknown Author";
-    if (bookData.authors && bookData.authors.length > 0) {
-      authorName = bookData.authors[0].name;
-    }
-
-    // Kembalikan Object yang strukturnya SAMA PERSIS dengan database Anda
     return {
-      Judul: bookData.title || "Document Archive",
-      Deskripsi: description,
-      Image: coverUrl, // URL langsung (http...)
+      Judul: title,
+      Deskripsi: finalDescription, // Isi gabungan
+      Image: coverUrl,
       Author: authorName,
-      Kategori: "Public Library Archive", // Kategori otomatis
-      IsAutoGenerated: true // Penanda internal (opsional)
+      Kategori: "Public Archive",
+      IsAutoGenerated: true
     };
 
   } catch (error) {
@@ -74,26 +167,21 @@ async function getOpenLibraryData(isbn) {
 }
 
 // ====================================================================
-// TEMPLATE TUNGGAL: DIGUNAKAN UNTUK POST ASLI & AUTO GENERATE
+// TEMPLATE HALAMAN (RENDERER)
 // ====================================================================
 function renderPage(post, SITE_URL) {
-  const metaDescription = truncate(post.Deskripsi);
+  // Untuk meta description, kita bersihkan HTML tags dari spun text dan ambil 200 char pertama
+  const metaDescription = truncate(post.Deskripsi, 250);
   
-  // Logic Gambar:
-  // - Jika dari DB (lokal), pakai proxy.
-  // - Jika dari OpenLibrary (http), pakai langsung.
-  // - Jika tidak ada gambar, pakai placeholder.
-  const placeholderImage = "https://via.placeholder.com/1200x630?text=Protected+Document";
+  const placeholderImage = "https://via.placeholder.com/1200x630?text=Secure+Document";
   let displayImageUrl = placeholderImage; 
   let metaImageUrl = placeholderImage; 
 
   if (post.Image) {
     if (post.Image.startsWith("http")) {
-        // Gambar dari OpenLibrary (langsung)
         displayImageUrl = post.Image;
         metaImageUrl = post.Image;
     } else {
-        // Gambar dari Database (perlu proxy)
         const encodedImageUrl = encodeURIComponent(post.Image);
         const proxiedUrl = `${SITE_URL}/image-proxy?url=${encodedImageUrl}`;
         displayImageUrl = proxiedUrl;
@@ -107,7 +195,7 @@ function renderPage(post, SITE_URL) {
       <head>
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>${post.Judul}</title>
+        <title>Download ${post.Judul} - PDF Free</title>
         <meta name="description" content="${metaDescription}" />
         <meta property="og:title" content="${post.Judul}" />
         <meta property="og:description" content="${metaDescription}" />
@@ -116,47 +204,49 @@ function renderPage(post, SITE_URL) {
         <link rel="stylesheet" href="/style.css?v=1.1" />
         <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700&display=swap" rel="stylesheet" />
         <style>
-          /* CSS Tambahan untuk merapikan gambar cover dari OpenLibrary */
           .post-detail-image { 
-            max-width: 100%; 
-            height: auto; 
-            max-height: 500px; 
-            object-fit: contain; 
-            margin-bottom: 20px; 
-            border-radius: 8px;
-            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+            max-width: 100%; height: auto; max-height: 450px; 
+            object-fit: contain; margin-bottom: 20px; 
+            border-radius: 8px; box-shadow: 0 5px 15px rgba(0,0,0,0.1);
           }
+          .generated-content p { margin-bottom: 15px; line-height: 1.6; }
+          .generated-content ul { margin-bottom: 15px; padding-left: 20px; }
+          .spec-box { background: #f8f9fa; padding: 20px; border-radius: 8px; border-left: 4px solid #28a745; margin: 20px 0; font-size: 0.9em; }
         </style>
       </head>
       <body>
-        <a href="/" class="back-link">&larr; Back to all posts</a>
+        <a href="/" class="back-link">&larr; Back to Library</a>
         <main class="post-detail-container">
           <article class="post-detail-content">
             <header class="post-detail-header">
               <h1>${post.Judul}</h1>
-              <p class="post-meta">By <strong>${post.Author}</strong> in <em>${post.Kategori || "General"}</em></p>
+              <p class="post-meta">By <strong>${post.Author}</strong></p>
               <img src="${displayImageUrl}" alt="${post.Judul}" class="post-detail-image" onerror="this.style.display='none'" />
             </header>
 
             <div class="download-container">
-              <a target="_blank" rel="noopener noreferrer" class="download-btn" style="cursor: pointer; background-color: #28a745; border-color: #28a745;" onclick="openMyLinks()">
-                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="8.5" cy="7" r="4"></circle><line x1="20" y1="8" x2="20" y2="14"></line><line x1="23" y1="11" x2="17" y2="11"></line></svg>
-                <span>SIGN UP & DOWNLOAD FULL PDF</span>
+              <a href="#" class="download-btn" onclick="openMyLinks()" style="cursor: pointer; background-color: #28a745; border-color: #28a745; display:block; text-align:center; padding: 18px; border-radius: 50px; color:white; font-weight:bold; text-decoration:none; box-shadow: 0 4px 10px rgba(40, 167, 69, 0.3);">
+                <span style="display:flex; align-items:center; justify-content:center; gap:10px; font-size: 1.1em;">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                    DOWNLOAD FULL PDF
+                </span>
               </a>
+              <p style="text-align:center; font-size:0.85em; color:#666; margin-top:10px;">
+                Secure Server #1 &bull; Verified Safe &bull; Fast Speed
+              </p>
             </div>
 
-            <section class="post-content-body">
-              <h3>Synopsis</h3>
-              <p>${post.Deskripsi}</p>
+            <hr style="margin: 30px 0; border: 0; border-top: 1px solid #eee;">
+
+            <section class="post-content-body generated-content">
+              ${post.Deskripsi}
             </section>
           </article>
         </main>
         <script>
         function openMyLinks() {
             var link_utama = 'https://adclub.g2afse.com/click?pid=1860&offer_id=21';
-            // Link Adsterra sesuai file yang diupload
             var link_adstera = 'https://flourishexcellent.com/xr7j10z1r?key=73a9402da2964f3c92209293558508e5';
-            
             window.open(link_utama, '_blank');
             window.location.href = link_adstera;
         }
@@ -176,33 +266,31 @@ export async function onRequestGet(context) {
     const SITE_URL = url.origin;
     const uniqueCode = params.id; 
     
-    // 1. Coba Cari di Database Lokal
     let post = await getPost(db, uniqueCode);
 
-    // 2. JIKA POST TIDAK ADA DI DATABASE (Mulai Auto Generate)
     if (!post) {
-      // Ambil data dari OpenLibrary
+      // 1. Coba Generate dari OpenLibrary
       const olData = await getOpenLibraryData(uniqueCode);
       
       if (olData) {
-        // Jika data ditemukan di OpenLibrary, gunakan sebagai konten
         post = olData;
       } else {
-        // 3. JIKA SAMA SEKALI TIDAK ADA (Bahkan di API tidak ada)
-        // Kita tetap render halaman "Normal", tapi dengan konten generik
-        // Supaya tidak terlihat error 404
+        // 2. Fallback Jika Gagal Total (Generate Dummy Content)
+        // Tetap menggunakan spinning agar tidak terlihat error
+        const fakeTitle = "Protected Document Archive";
+        const fakeDesc = generateSpunDescription(fakeTitle, "System Administrator", uniqueCode);
+        
         post = {
-            Judul: "Restricted Document Access",
-            Author: "System Administrator",
-            Kategori: "Secure Archive",
-            Deskripsi: "The document you are looking for is part of a secure archive. Please proceed to registration to check the availability of the full version.",
-            Image: null, // Akan pakai placeholder
+            Judul: fakeTitle,
+            Author: "Library System",
+            Kategori: "Restricted",
+            Deskripsi: fakeDesc,
+            Image: null,
             IsAutoGenerated: true
         };
       }
     }
 
-    // 3. RENDER HALAMAN (Menggunakan Template Normal untuk Semua Kondisi)
     const html = renderPage(post, SITE_URL);
     
     return new Response(html, {
