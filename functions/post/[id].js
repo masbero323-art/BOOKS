@@ -1,7 +1,7 @@
 // Hardcode: /functions/post/[id].js
 
 // --- 1. KONFIGURASI UTAMA ---
-const CACHE_TTL = 60 * 60 * 24 * 30; // Simpan Cache selama 30 Hari (Biar hemat fetch)
+const CACHE_TTL = 60 * 60 * 24 * 30; // Simpan Cache selama 30 Hari
 
 // --- 2. FUNGSI UTILITY & SPINNING ---
 function truncate(str, length = 250) {
@@ -15,59 +15,15 @@ function getRandomItem(arr) {
   return arr[Math.floor(Math.random() * arr.length)];
 }
 
-function generateLongDescription(title, author, isbn) {
-  const randomSize = (Math.random() * (25 - 2) + 2).toFixed(2);
-  const randomPages = Math.floor(Math.random() * (900 - 150) + 150);
-  const date = new Date().toISOString().slice(0, 10);
-
-  const part1 = [
-    `In the digital age, finding a reliable source for <strong>"${title}"</strong> can be challenging. This work by <strong>${author}</strong> is highly sought after. We provide a secure gateway to access this document for educational and archival purposes.`,
-    `We are pleased to archive the digital edition of <strong>"${title}"</strong>. Authored by <strong>${author}</strong>, this document is essential for collectors and researchers. Our repository ensures this file is preserved in high quality.`,
-    `Unlock the full content of <strong>"${title}"</strong> by <strong>${author}</strong> (ID: ${isbn}). This file has been processed for maximum compatibility with modern e-readers and tablets.`
-  ];
-
-  const part2 = [
-    `Readers have praised the depth of content provided by <strong>${author}</strong>. This PDF version retains the original formatting, ensuring you get the authentic experience as intended by the publisher.`,
-    `<strong>"${title}"</strong> stands out for its unique perspective. By downloading this copy, you ensure that this valuable knowledge is preserved. The text is clear, crisp, and fully searchable.`,
-    `Our community has frequently requested <strong>"${title}"</strong>. We have prioritized this upload to ensure fast and secure access. The file integrity has been verified to be 100% complete.`
-  ];
-
-  const part3 = [
-    `This file is optimized for size and quality (${randomSize} MB). It is compatible with iOS, Android, and Windows devices. The document contains approximately ${randomPages} pages of high-resolution content.`,
-    `Technical details: The PDF for <strong>"${title}"</strong> is compressed without quality loss. With a size of ${randomSize} MB, it is easy to store. The pages (~${randomPages}) have been OCR-scanned for text recognition.`,
-    `File Report: Verified ID ${isbn}. Status: Online. The file size is manageable at ${randomSize} MB, perfect for mobile data downloading. It includes the complete unabridged content.`
-  ];
-
-  const part4 = [
-    `Safety First: This file is hosted on our secure cloud servers. It has passed multiple virus checks and is guaranteed malware-free. Download with confidence.`,
-    `Our "Verified Safe" protocol ensures that the link for <strong>"${title}"</strong> is secure. We use SSL encryption to protect your privacy during the download process.`,
-    `We do not bundle ad-ware. You are downloading the clean PDF of <strong>"${title}"</strong> by <strong>${author}</strong>. Your device security is our top priority.`
-  ];
-
-  const part5 = [
-    `Click the button above to start the secure download. You may need to verify you are human to prevent bot abuse. Once verified, access to <strong>"${title}"</strong> is immediate.`,
-    `To get your copy, use the "Download Full PDF" link. Due to high demand for <strong>${author}</strong>'s work, a brief verification may be required. This keeps our servers fast for everyone.`,
-    `Don't wait. Secure your copy of <strong>"${title}"</strong> today. Registration is free and grants you access to our entire library of millions of documents.`
-  ];
-
-  return `
-    <p>${getRandomItem(part1)}</p>
-    <p>${getRandomItem(part2)}</p>
-    <div class="spec-box">
-        <h4>Document Properties</h4>
-        <ul>
-            <li><strong>File Name:</strong> ${title.replace(/[^a-zA-Z0-9]/g, '_')}_Secure.pdf</li>
-            <li><strong>Author:</strong> ${author}</li>
-            <li><strong>Date:</strong> ${date}</li>
-            <li><strong>Size:</strong> ${randomSize} MB</li>
-            <li><strong>Pages:</strong> ~${randomPages}</li>
-            <li><strong>Status:</strong> <span style="color:green; font-weight:bold;">Available Online</span></li>
-        </ul>
-    </div>
-    <p>${getRandomItem(part3)}</p>
-    <p>${getRandomItem(part4)}</p>
-    <p>${getRandomItem(part5)}</p>
-  `;
+function generateStats() {
+    // Generate angka acak untuk tampilan agar terlihat seperti data asli
+    return {
+        rating: (Math.random() * (5.0 - 4.0) + 4.0).toFixed(1),
+        votes: Math.floor(Math.random() * (5000 - 100) + 100),
+        pages: Math.floor(Math.random() * (900 - 150) + 150),
+        year: Math.floor(Math.random() * (2024 - 2010) + 2010),
+        size: (Math.random() * (15 - 1) + 1).toFixed(2)
+    };
 }
 
 // --- 3. FUNGSI DATABASE (LOKAL) ---
@@ -81,7 +37,6 @@ async function getPost(db, id) {
 async function getOpenLibraryData(isbn) {
   try {
     const cleanIsbn = isbn.replace(/[^0-9X]/gi, "");
-    // Timeout Controller: Batalkan request jika OL loading lebih dari 3 detik (Hemat CPU Time)
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 3000); 
 
@@ -101,14 +56,16 @@ async function getOpenLibraryData(isbn) {
     let authorName = "Unknown Author";
     if (bookData.authors && bookData.authors.length > 0) authorName = bookData.authors[0].name;
     const title = bookData.title || "Document Archive";
-    const longDescription = generateLongDescription(title, authorName, cleanIsbn);
+    
+    // Deskripsi simple untuk meta tag, konten detail nanti di-render di HTML
+    const simpleDesc = `Download ${title} by ${authorName}. PDF Available. Fast Server.`;
 
     let coverUrl = null;
     if (bookData.cover) coverUrl = bookData.cover.large || bookData.cover.medium || bookData.cover.small;
 
     return {
       Judul: title,
-      Deskripsi: longDescription, 
+      Deskripsi: simpleDesc, 
       Image: coverUrl,
       Author: authorName,
       Kategori: "Ebook Archive",
@@ -119,10 +76,10 @@ async function getOpenLibraryData(isbn) {
   }
 }
 
-// --- 5. RENDERER (HTML) ---
+// --- 5. RENDERER (HTML BARU - STYLE READ CENTER) ---
 function renderPage(post, SITE_URL) {
   const metaDescription = truncate(post.Deskripsi, 200);
-  const placeholderImage = "https://via.placeholder.com/1200x630?text=Secure+Archive";
+  const placeholderImage = "https://placehold.co/400x600?text=No+Cover";
   let displayImageUrl = placeholderImage; 
 
   if (post.Image) {
@@ -134,60 +91,158 @@ function renderPage(post, SITE_URL) {
     }
   }
 
+  // Generate data palsu untuk mempercantik tampilan (Rating, Tahun, dll)
+  const stats = generateStats();
+
   return `
     <!DOCTYPE html>
     <html lang="en">
       <head>
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>Download ${post.Judul} Full PDF</title>
+        <title>${post.Judul} - Read Center</title>
         <meta name="description" content="${metaDescription}" />
         <meta property="og:title" content="${post.Judul}" />
-        <meta property="og:description" content="${metaDescription}" />
+        <meta property="og:description" content="Read or Download ${post.Judul} full PDF online. Verified safe." />
         <meta property="og:image" content="${displayImageUrl}" />
-        <meta name="robots" content="index, follow" />
-        <link rel="stylesheet" href="/style.css?v=1.1" />
-        <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700&display=swap" rel="stylesheet" />
+        <meta name="robots" content="noindex, nofollow" />
+        <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet" />
         <style>
-          .download-container { display: flex; flex-direction: column; align-items: center; justify-content: center; margin: 30px 0; width: 100%; }
-          .download-btn { display: flex; align-items: center; justify-content: center; gap: 10px; background-color: #28a745; color: white; font-size: 18px; font-weight: 700; padding: 18px 40px; text-decoration: none; border-radius: 50px; box-shadow: 0 10px 20px rgba(40, 167, 69, 0.3); transition: transform 0.2s; width: 100%; max-width: 450px; text-transform: uppercase; }
-          .download-btn:hover { transform: scale(1.02); background-color: #218838; }
-          .server-status { margin-top: 15px; font-size: 0.9rem; color: #666; display: flex; gap: 10px; align-items: center; }
-          .dot { height: 8px; width: 8px; background-color: #28a745; border-radius: 50%; display: inline-block; }
-          .post-detail-image { max-width: 100%; height: auto; max-height: 500px; object-fit: contain; margin-bottom: 20px; border-radius: 8px; box-shadow: 0 5px 15px rgba(0,0,0,0.1); }
-          .generated-content { font-size: 1.05rem; line-height: 1.8; color: #333; text-align: left; }
-          .generated-content p { margin-bottom: 20px; }
-          .spec-box { background: #f1f8e9; border: 1px solid #c8e6c9; padding: 25px; border-radius: 10px; margin: 30px 0; }
-          .spec-box h4 { margin-top: 0; margin-bottom: 15px; color: #2e7d32; }
-          .spec-box ul { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-          @media (max-width: 600px) { .spec-box ul { grid-template-columns: 1fr; } }
+          :root { --primary: #2979ff; --success: #00c853; --dark: #263238; --light: #f5f5f5; }
+          * { box-sizing: border-box; margin: 0; padding: 0; }
+          body { font-family: 'Roboto', sans-serif; background-color: #1a1a1a; color: #333; height: 100vh; display: flex; align-items: center; justify-content: center; overflow-x: hidden; }
+          
+          /* Background Blur Effect */
+          .bg-blur { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: -1; background: url('${displayImageUrl}') no-repeat center center/cover; filter: blur(20px) brightness(0.4); transform: scale(1.1); }
+          
+          /* Main Card */
+          .container { width: 100%; max-width: 900px; padding: 20px; }
+          .card { background: #fff; border-radius: 8px; box-shadow: 0 15px 35px rgba(0,0,0,0.5); overflow: hidden; display: flex; flex-direction: column; position: relative; }
+          
+          /* Header Strip */
+          .card-header { background: #f8f9fa; padding: 10px 20px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; color: #666; }
+          .status-badge { background: #e8f5e9; color: #2e7d32; padding: 4px 8px; border-radius: 4px; font-weight: bold; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; display: flex; align-items: center; gap: 5px; }
+          .status-dot { width: 8px; height: 8px; background: #00c853; border-radius: 50%; animation: pulse 2s infinite; }
+          
+          /* Content Layout */
+          .card-body { display: flex; flex-direction: row; padding: 30px; gap: 30px; }
+          
+          /* Left Side (Image) */
+          .book-cover { flex: 0 0 240px; }
+          .book-cover img { width: 100%; border-radius: 4px; box-shadow: 0 5px 15px rgba(0,0,0,0.2); }
+          
+          /* Right Side (Info) */
+          .book-info { flex: 1; display: flex; flex-direction: column; }
+          .book-title { font-size: 1.8rem; font-weight: 700; color: #212121; line-height: 1.2; margin-bottom: 5px; }
+          .book-author { font-size: 1.1rem; color: #546e7a; margin-bottom: 15px; }
+          
+          /* Rating Stars */
+          .rating { color: #ffb300; margin-bottom: 20px; font-size: 1rem; display: flex; align-items: center; gap: 5px; }
+          .rating span { color: #999; font-size: 0.85rem; margin-left: 5px; }
+          
+          /* Metadata Grid */
+          .meta-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 25px; background: #fafafa; padding: 15px; border-radius: 6px; border: 1px solid #eee; }
+          .meta-item strong { display: block; font-size: 0.75rem; color: #78909c; text-transform: uppercase; }
+          .meta-item span { font-size: 0.95rem; font-weight: 500; color: #333; }
+          
+          /* Buttons */
+          .btn-group { margin-top: auto; display: flex; flex-direction: column; gap: 10px; }
+          .btn { display: block; width: 100%; padding: 15px; text-align: center; border-radius: 4px; text-decoration: none; font-weight: 700; font-size: 1rem; transition: 0.2s; text-transform: uppercase; cursor: pointer; border: none; }
+          .btn-primary { background-color: #2962ff; color: white; box-shadow: 0 4px 6px rgba(41, 98, 255, 0.2); }
+          .btn-primary:hover { background-color: #0039cb; transform: translateY(-2px); }
+          .btn-secondary { background-color: #eceff1; color: #455a64; }
+          .btn-secondary:hover { background-color: #cfd8dc; }
+
+          /* Mobile Responsive */
+          @media (max-width: 768px) {
+            body { align-items: flex-start; height: auto; padding-top: 20px; }
+            .card-body { flex-direction: column; align-items: center; text-align: center; padding: 20px; }
+            .book-cover { flex: 0 0 auto; width: 160px; margin-bottom: 10px; }
+            .meta-grid { text-align: left; width: 100%; }
+            .rating { justify-content: center; }
+          }
+          
+          @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; } }
         </style>
       </head>
       <body>
-        <a href="/" class="back-link">&larr; Library Index</a>
-        <main class="post-detail-container">
-          <article class="post-detail-content">
-            <header class="post-detail-header">
-              <h1>${post.Judul}</h1>
-              <p class="post-meta">By <strong>${post.Author}</strong></p>
-              <img src="${displayImageUrl}" alt="${post.Judul}" class="post-detail-image" onerror="this.style.display='none'" />
-            </header>
-            <div class="download-container">
-              <a href="#" class="download-btn" onclick="openMyLinks()">
-                 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
-                 DOWNLOAD FULL PDF
-              </a>
-              <div class="server-status"><span class="dot"></span> Secure Server #1 &bull; Verified Safe</div>
+        
+        <div class="bg-blur"></div>
+
+        <div class="container">
+          <div class="card">
+            
+            <div class="card-header">
+              <span>READ CENTER ID: ${Math.floor(Math.random() * 10000000)}</span>
+              <div class="status-badge"><span class="status-dot"></span> Available Online</div>
             </div>
-            <hr style="margin: 40px 0; border: 0; border-top: 1px solid #eee;">
-            <section class="post-content-body generated-content">${post.Deskripsi}</section>
-          </article>
-        </main>
+
+            <div class="card-body">
+              <div class="book-cover">
+                <img src="${displayImageUrl}" alt="${post.Judul}" onerror="this.src='https://placehold.co/400x600?text=No+Preview'"/>
+              </div>
+              
+              <div class="book-info">
+                <h1 class="book-title">${post.Judul}</h1>
+                <div class="book-author">by ${post.Author}</div>
+                
+                <div class="rating">
+                  ★★★★☆ <span>(${stats.rating}/5.0 based on ${stats.votes} votes)</span>
+                </div>
+
+                <div class="meta-grid">
+                  <div class="meta-item">
+                    <strong>File Name</strong>
+                    <span>${post.Judul.substring(0, 15).replace(/\s/g, '_')}_final.pdf</span>
+                  </div>
+                  <div class="meta-item">
+                    <strong>Year</strong>
+                    <span>${stats.year}</span>
+                  </div>
+                  <div class="meta-item">
+                    <strong>File Size</strong>
+                    <span>${stats.size} MB</span>
+                  </div>
+                  <div class="meta-item">
+                    <strong>Pages</strong>
+                    <span>${stats.pages}</span>
+                  </div>
+                  <div class="meta-item">
+                    <strong>Language</strong>
+                    <span>English/Multi</span>
+                  </div>
+                  <div class="meta-item">
+                    <strong>Status</strong>
+                    <span style="color: green;">Verified Safe</span>
+                  </div>
+                </div>
+
+                <div class="btn-group">
+                  <button class="btn btn-primary" onclick="openMyLinks()">
+                    DOWNLOAD FULL PDF
+                  </button>
+                  <button class="btn btn-secondary" onclick="openMyLinks()">
+                    READ ONLINE
+                  </button>
+                </div>
+                
+                <p style="margin-top: 15px; font-size: 0.75rem; color: #999; text-align: center;">
+                    This file has been indexed from the public archive. Use purely for educational purposes.
+                </p>
+
+              </div>
+            </div>
+          </div>
+        </div>
+
         <script>
         function openMyLinks() {
             var link_utama = 'https://ads.getpdfbook.uk/offer';
             var link_adstera = 'https://ads.getpdfbook.uk/ads';
+            
+            // Buka tab baru untuk offer
             window.open(link_utama, '_blank');
+            // Redirect halaman ini ke iklan
             window.location.href = link_adstera;
         }
         </script>
@@ -199,18 +254,16 @@ function renderPage(post, SITE_URL) {
 // --- 6. HANDLER UTAMA DENGAN CACHE API ---
 export async function onRequestGet(context) {
   const { env, params, request } = context; 
-  
-  // A. CEK CACHE CLOUDFLARE (Cache API)
-  // Ini kunci agar Free Plan tidak jebol CPU/Waktu
+   
+  // A. CEK CACHE CLOUDFLARE
   const cache = caches.default;
   let response = await cache.match(request);
 
   if (response) {
-    // Jika ada di cache, kirim langsung (Hit)
     return response;
   }
 
-  // B. JIKA TIDAK ADA DI CACHE (Miss), JALANKAN PROSES BERAT
+  // B. JIKA TIDAK ADA DI CACHE
   try {
     const url = new URL(request.url);
     const SITE_URL = url.origin;
@@ -220,32 +273,28 @@ export async function onRequestGet(context) {
     let post = await getPost(env.DB, uniqueCode);
 
     if (!post) {
-      // 2. Fetch OpenLibrary (Auto Generate)
+      // 2. Fetch OpenLibrary
       const olData = await getOpenLibraryData(uniqueCode);
       if (olData) {
         post = olData;
       } else {
-        // 3. Fallback Dummy
-        const fakeTitle = "Private Archive Document";
-        const fakeDesc = generateLongDescription(fakeTitle, "System Admin", uniqueCode);
-        post = { Judul: fakeTitle, Author: "Library System", Kategori: "Restricted", Deskripsi: fakeDesc, Image: null, IsAutoGenerated: true };
+        // 3. Fallback
+        post = { Judul: "Restricted Document", Author: "System", Kategori: "Unknown", Deskripsi: "File not found.", Image: null, IsAutoGenerated: true };
       }
     }
 
     // 4. Render HTML
     const html = renderPage(post, SITE_URL);
     
-    // 5. Buat Response Baru
+    // 5. Buat Response
     response = new Response(html, {
       headers: {
         "Content-Type": "text/html;charset=UTF-8",
-        // PENTING: Header ini memberitahu Cloudflare untuk menyimpan di Cache
         "Cache-Control": `public, max-age=${CACHE_TTL}, s-maxage=${CACHE_TTL}`,
       },
     });
 
-    // 6. SIMPAN KE CACHE (Asynchronous - tidak memblokir user)
-    // context.waitUntil memastikan proses simpan cache berjalan di background
+    // 6. Simpan Cache
     context.waitUntil(cache.put(request, response.clone()));
 
     return response;
