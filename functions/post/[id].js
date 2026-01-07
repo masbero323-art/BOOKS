@@ -1,117 +1,121 @@
 // Hardcode: /functions/post/[id].js
 
-// --- 1. KONFIGURASI UTAMA ---
-const CACHE_TTL = 60 * 60 * 24 * 30; // Cache 30 Hari
+// --- 1. KONFIGURASI ---
+const CACHE_TTL = 60 * 60 * 24 * 7; // Cache 7 Hari (Cukup lama karena data buku jarang berubah)
 
-// --- 2. FUNGSI UTILITY & SPINNING ---
-function truncate(str, length = 250) {
-  if (!str) return "";
-  const cleanStr = str.replace(/<[^>]*>?/gm, "");
-  if (cleanStr.length <= length) return cleanStr;
-  return cleanStr.substring(0, length) + "...";
-}
-
+// --- 2. UTILITY & FAKE STATS (Agar terlihat ramai) ---
 function generateStats() {
-    // Angka-angka ini membuat buku terlihat "hidup" dan aktif dibaca
     return {
-        rating: (Math.random() * (4.9 - 3.8) + 3.8).toFixed(2),
-        votes: Math.floor(Math.random() * (50000 - 1000) + 1000).toLocaleString(),
-        reviews: Math.floor(Math.random() * (5000 - 100) + 100).toLocaleString(),
-        pages: Math.floor(Math.random() * (600 - 200) + 200),
-        year: Math.floor(Math.random() * (2023 - 2010) + 2010),
-        size: (Math.random() * (8 - 1) + 1).toFixed(2)
+        rating: (Math.random() * (4.8 - 3.9) + 3.9).toFixed(2), // Rating tinggi
+        votes: Math.floor(Math.random() * (150000 - 5000) + 5000).toLocaleString(),
+        reviews: Math.floor(Math.random() * (10000 - 500) + 500).toLocaleString(),
+        pages: Math.floor(Math.random() * (900 - 250) + 250),
+        year: Math.floor(Math.random() * (2025 - 2020) + 2020), // Fokus buku baru
+        size: (Math.random() * (12 - 2) + 2).toFixed(2)
     };
 }
 
-// --- 3. FUNGSI DATABASE (LOKAL) ---
-async function getPost(db, id) {
-  const stmt = db.prepare("SELECT * FROM Buku WHERE KodeUnik = ?").bind(id);
-  const result = await stmt.first();
-  return result;
+// Cover cadangan jika Goodreads gagal total (Jaring Pengaman)
+function getRandomFallbackCover() {
+    const covers = [
+        "https://images.unsplash.com/photo-1541963463532-d68292c34b19?auto=format&fit=crop&q=80&w=400&h=600",
+        "https://images.unsplash.com/photo-1512820790803-83ca734da794?auto=format&fit=crop&q=80&w=400&h=600",
+        "https://images.unsplash.com/photo-1589829085413-56de8ae18c73?auto=format&fit=crop&q=80&w=400&h=600"
+    ];
+    return covers[Math.floor(Math.random() * covers.length)];
 }
 
-// --- 4. FUNGSI PINTAR (AGC: GOODREADS ID -> ISBN -> AMAZON IMAGE) ---
-async function getSmartData(grId) {
-  const cleanId = grId.trim(); // Ini ID Goodreads (Angka)
-
-  // Default Fallback
-  let title = "Archived Document";
-  let author = "Unknown Author";
-  let coverImage = "https://placehold.co/400x600?text=Archive+Cover"; // Placeholder sementara
-  let description = `This document (ID: ${cleanId}) is available in our archive.`;
-  let isGenerated = true;
-
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 3500); // 3.5 Detik timeout
-
-    // TRIK: Request ke OpenLibrary menggunakan key 'GOODREADS'
-    const url = `https://openlibrary.org/api/books?bibkeys=GOODREADS:${cleanId}&jscmd=data&format=json`;
+// --- 3. THE SCRAPER (INTI DARI SCRIPT INI) ---
+async function fetchGoodreadsLive(id) {
+    const cleanId = id.trim();
+    const targetUrl = `https://www.goodreads.com/book/show/${cleanId}`;
     
-    const response = await fetch(url, { 
-        headers: { "User-Agent": "CloudflareWorker/1.0" },
-        signal: controller.signal
-    });
-    clearTimeout(timeoutId);
+    // Default Data (Jika Scrape Gagal)
+    let data = {
+        title: `Document ID ${cleanId}`,
+        author: "Archived Author",
+        image: getRandomFallbackCover(),
+        description: "This document has been archived securely in our repository. Download availability is guaranteed.",
+        isScraped: false
+    };
 
-    if (response.ok) {
-        const data = await response.json();
-        const key = `GOODREADS:${cleanId}`;
-        const bookData = data[key];
+    try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 4000); // Max 4 detik loading
 
-        if (bookData) {
-            // 1. Ambil Metadata Teks
-            title = bookData.title || title;
-            if (bookData.authors && bookData.authors.length > 0) {
-                author = bookData.authors[0].name;
-            }
+        // Kita menyamar sebagai Browser Chrome asli agar tidak diblokir Goodreads
+        const response = await fetch(targetUrl, {
+            headers: {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.5"
+            },
+            signal: controller.signal
+        });
+        clearTimeout(timeoutId);
 
-            // 2. TRIK GAMBAR HD (Convert GR ID -> ISBN -> Amazon Image)
-            // Kita cari apakah ada ISBN di datanya. Kalau ada, kita curi gambar Amazon.
-            let foundIsbn = null;
-            if (bookData.identifiers) {
-                if (bookData.identifiers.isbn_10) foundIsbn = bookData.identifiers.isbn_10[0];
-                else if (bookData.identifiers.isbn_13) foundIsbn = bookData.identifiers.isbn_13[0];
-            }
-
-            if (foundIsbn) {
-                // HACK: Pakai Server Amazon kalau punya ISBN (Pasti HD)
-                coverImage = `https://images-na.ssl-images-amazon.com/images/P/${foundIsbn}.01.LZZZZZZZ.jpg`;
-            } else if (bookData.cover) {
-                // Fallback: Pakai gambar OpenLibrary kalau gak punya ISBN
-                coverImage = bookData.cover.large || bookData.cover.medium;
-            }
+        if (response.ok) {
+            const html = await response.text();
             
-            isGenerated = false;
+            // --- REGEX MAGIC (Mengambil Meta Tags) ---
+            
+            // 1. Ambil Judul (og:title)
+            // Format biasanya: "Judul Buku (Series, #1) by Penulis"
+            const titleMatch = html.match(/<meta property="og:title" content="([^"]*)"/);
+            
+            // 2. Ambil Gambar (og:image)
+            const imageMatch = html.match(/<meta property="og:image" content="([^"]*)"/);
+            
+            // 3. Ambil Deskripsi (og:description)
+            const descMatch = html.match(/<meta property="og:description" content="([^"]*)"/);
+
+            if (titleMatch && titleMatch[1]) {
+                let fullTitle = titleMatch[1];
+                
+                // Pisahkan Judul dan Penulis (Biasanya dipisah kata " by ")
+                let author = "Famous Author";
+                let title = fullTitle;
+                
+                // Coba split " by " (Goodreads format standar)
+                if (fullTitle.includes(" by ")) {
+                    const parts = fullTitle.split(" by ");
+                    author = parts[parts.length - 1]; // Ambil bagian paling belakang sebagai nama
+                    title = parts.slice(0, parts.length - 1).join(" by "); // Gabung sisanya sebagai judul
+                } else if (fullTitle.includes(" by: ")) { // Kadang formatnya begini
+                     const parts = fullTitle.split(" by: ");
+                     author = parts[1];
+                     title = parts[0];
+                }
+
+                data.title = title;
+                data.author = author;
+                data.isScraped = true;
+            }
+
+            if (imageMatch && imageMatch[1]) {
+                data.image = imageMatch[1];
+            }
+
+            if (descMatch && descMatch[1]) {
+                // Bersihkan deskripsi dari HTML entities dasar jika ada
+                data.description = descMatch[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&');
+            } else {
+                 data.description = `A popular book by ${data.author}. Currently trending in our database.`;
+            }
         }
+
+    } catch (e) {
+        console.log("Scraping Error:", e.message);
+        // Tetap lanjut menggunakan Default Data (Fallback)
+        // Jadi halaman tidak akan pernah blank
     }
-  } catch (error) {
-    console.log("Fetch Error:", error);
-  }
 
-  // Jika gagal total (ID Ngawur), kita tetap return halaman valid (AGC Murni)
-  if (isGenerated) {
-      title = `Document ID ${cleanId}`;
-      description = "This file has been requested from the secure repository.";
-  }
-
-  return {
-    Judul: title,
-    Deskripsi: description,
-    Image: coverImage,
-    Author: author,
-    Kategori: "Ebook",
-    IsAutoGenerated: isGenerated
-  };
+    return data;
 }
 
-// --- 5. RENDERER (STYLE: GOODREADS CLASSIC) ---
+// --- 4. RENDERER (TAMPILAN UI) ---
 function renderPage(post, SITE_URL) {
   const stats = generateStats();
-  
-  // URL Gambar untuk Background (Blurred)
-  // Jika image-nya dari Amazon, aman. Jika placeholder, aman.
-  const bgImage = post.Image;
 
   return `
     <!DOCTYPE html>
@@ -119,149 +123,127 @@ function renderPage(post, SITE_URL) {
       <head>
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>${post.Judul} by ${post.Author} - Goodreads Archive</title>
-        <meta name="description" content="Reader reviews and downloads for ${post.Judul}. Best archive for PDF, ePub, and Mobi files." />
+        <title>Download ${post.title} PDF - Free Archive</title>
+        <meta name="description" content="Read or Download ${post.title} by ${post.author}. Full PDF available." />
         
-        <meta property="og:title" content="${post.Judul}" />
-        <meta property="og:description" content="Download full book PDF. Verified Safe." />
-        <meta property="og:image" content="${post.Image}" />
+        <meta property="og:title" content="${post.title}" />
+        <meta property="og:image" content="${post.image}" />
         <meta name="robots" content="noindex, nofollow" />
         
-        <link href="https://fonts.googleapis.com/css2?family=Merriweather:wght@300;400;700&family=Lato:wght@400;700&display=swap" rel="stylesheet" />
+        <link href="https://fonts.googleapis.com/css2?family=Merriweather:wght@300;700;900&family=Lato:wght@400;700&display=swap" rel="stylesheet" />
         
         <style>
-          :root { --gr-bg: #f4f1ea; --gr-brown: #382110; --gr-green: #409D69; --link-blue: #00635d; }
-          body { font-family: 'Lato', sans-serif; background-color: var(--gr-bg); margin: 0; padding: 0; color: #333; }
+          :root { --primary: #372213; --accent: #009688; --bg: #fdfbf7; }
+          body { font-family: 'Lato', sans-serif; background: var(--bg); color: #333; margin: 0; padding: 0; min-height: 100vh; display: flex; flex-direction: column; }
           
-          /* Navbar Palsu */
-          .nav { background: #f4f1ea; padding: 10px 20px; border-bottom: 1px solid #d6d0c4; display: flex; align-items: center; gap: 20px; }
-          .nav-logo { font-family: 'Merriweather', serif; font-weight: bold; font-size: 20px; color: var(--gr-brown); letter-spacing: -0.5px; }
-          .nav-fake { display: none; gap: 15px; font-size: 14px; color: var(--gr-brown); }
-          @media(min-width: 600px) { .nav-fake { display: flex; } }
+          /* Header Simple */
+          .header { background: #fff; border-bottom: 1px solid #e1dcd7; padding: 15px 0; text-align: center; }
+          .logo { font-family: 'Merriweather', serif; font-weight: 900; font-size: 24px; color: var(--primary); letter-spacing: -1px; }
 
           /* Main Container */
-          .container { max-width: 960px; margin: 20px auto; background: #fff; padding: 25px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); display: flex; gap: 30px; }
+          .main { flex: 1; max-width: 900px; margin: 30px auto; padding: 20px; width: 100%; box-sizing: border-box; }
+          .book-card { display: flex; gap: 40px; background: transparent; }
           
-          /* Left Column (Cover) */
-          .col-cover { width: 220px; flex-shrink: 0; }
-          .book-img { width: 100%; border-radius: 2px; box-shadow: 0 2px 5px rgba(0,0,0,0.2); }
-          .btn-actions { margin-top: 15px; display: flex; flex-direction: column; gap: 8px; }
-          .btn-want { background: var(--gr-green); color: white; border: none; padding: 10px; border-radius: 3px; font-weight: bold; cursor: pointer; width: 100%; }
-          .rate-this { text-align: center; font-size: 12px; color: #999; margin-top: 5px; }
-
-          /* Right Column (Info) */
-          .col-info { flex: 1; }
-          .book-title { font-family: 'Merriweather', serif; font-size: 26px; font-weight: bold; color: #333; line-height: 1.3; margin-bottom: 5px; }
-          .book-author { font-size: 16px; color: #333; margin-bottom: 15px; }
-          .book-author a { color: #333; text-decoration: none; font-weight: bold; }
+          /* Kiri: Gambar */
+          .cover-wrapper { width: 260px; flex-shrink: 0; position: relative; }
+          .book-cover { width: 100%; border-radius: 5px; box-shadow: 0 10px 25px rgba(0,0,0,0.15); transition: transform 0.3s; }
+          .book-cover:hover { transform: translateY(-5px); }
           
-          /* Meta Strip */
-          .meta-strip { display: flex; align-items: center; gap: 10px; font-size: 13px; color: #666; margin-bottom: 20px; border-bottom: 1px solid #eee; padding-bottom: 15px; }
-          .stars { color: #fa604a; font-size: 16px; }
+          /* Kanan: Info */
+          .info-wrapper { flex: 1; }
+          .book-title { font-family: 'Merriweather', serif; font-size: 32px; color: var(--primary); margin: 0 0 5px 0; line-height: 1.2; }
+          .book-author { font-size: 18px; color: #666; margin-bottom: 20px; }
+          
+          /* Stats Bar */
+          .stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin-bottom: 25px; padding: 15px; background: #fff; border: 1px solid #eee; border-radius: 8px; text-align: center; }
+          .stat-val { font-weight: bold; font-size: 16px; color: #333; }
+          .stat-label { font-size: 12px; color: #999; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 3px; }
 
-          /* Description Content */
-          .desc-box { font-family: 'Merriweather', serif; font-size: 15px; line-height: 1.6; color: #181818; margin-bottom: 30px; }
+          /* Description */
+          .desc { font-size: 16px; line-height: 1.7; color: #444; margin-bottom: 30px; font-family: 'Merriweather', serif; }
 
-          /* CALL TO ACTION BUTTON - YANG PALING PENTING */
-          .download-box { 
-            background: #fafafa; border: 2px dashed #ccc; border-radius: 8px; 
-            padding: 25px; text-align: center; margin-bottom: 30px; 
-          }
-          .btn-dl-main {
-            background-color: #d32f2f; color: white; font-size: 18px; font-weight: bold;
-            padding: 15px 50px; border-radius: 50px; text-decoration: none;
-            display: inline-block; box-shadow: 0 4px 10px rgba(211, 47, 47, 0.4);
-            transition: transform 0.2s;
-          }
-          .btn-dl-main:hover { transform: scale(1.05); background-color: #b71c1c; }
-          .dl-note { margin-top: 10px; font-size: 12px; color: #666; }
+          /* BUTTONS - AGC GOAL */
+          .btn-group { display: flex; flex-direction: column; gap: 12px; }
+          .btn { display: block; width: 100%; text-align: center; padding: 18px; border-radius: 50px; text-decoration: none; font-weight: bold; font-size: 18px; transition: all 0.2s; cursor: pointer; border: none; }
+          
+          .btn-primary { background: #d32f2f; color: white; box-shadow: 0 4px 15px rgba(211, 47, 47, 0.3); }
+          .btn-primary:hover { background: #b71c1c; transform: scale(1.02); }
+          
+          .btn-secondary { background: #fff; color: #333; border: 2px solid #ddd; }
+          .btn-secondary:hover { background: #f5f5f5; }
 
-          /* Fake Details */
-          .details-list { font-size: 12px; color: #999; }
-          .details-list div { margin-bottom: 4px; }
-          .details-list strong { color: #333; }
-
-          @media (max-width: 700px) {
-            .container { flex-direction: column; padding: 15px; }
-            .col-cover { width: 140px; margin: 0 auto; }
-            .book-title, .book-author { text-align: center; }
-            .meta-strip { justify-content: center; }
+          /* Responsive */
+          @media (max-width: 768px) {
+            .book-card { flex-direction: column; align-items: center; }
+            .cover-wrapper { width: 180px; }
+            .info-wrapper { text-align: center; }
+            .book-title { font-size: 24px; }
           }
         </style>
       </head>
       <body>
-
-        <div class="nav">
-            <div class="nav-logo">goodreads</div>
-            <div class="nav-fake">
-                <span>Home</span>
-                <span>My Books</span>
-                <span>Browse ▾</span>
-                <span>Community ▾</span>
-            </div>
+        <div class="header">
+            <div class="logo">LibraryArchive</div>
         </div>
 
-        <div class="container">
-            <div class="col-cover">
-                <img src="${post.Image}" class="book-img" alt="${post.Judul}" onerror="this.src='https://placehold.co/200x300?text=No+Cover'"/>
-                <div class="btn-actions">
-                    <button class="btn-want">Want to Read</button>
-                    <div class="rate-this">Rate this book<br/>⭐⭐⭐⭐⭐</div>
-                </div>
-            </div>
-
-            <div class="col-info">
-                <h1 class="book-title">${post.Judul}</h1>
-                <div class="book-author">by <a href="#">${post.Author}</a></div>
-                
-                <div class="meta-strip">
-                    <span class="stars">★★★★☆</span>
-                    <span>${stats.rating}</span>
-                    <span>·</span>
-                    <span>${stats.votes} ratings</span>
-                    <span>·</span>
-                    <span>${stats.reviews} reviews</span>
-                </div>
-
-                <div class="desc-box">
-                    <p>
-                        <strong>Description:</strong><br>
-                        This digital edition of <em>${post.Judul}</em> has been archived for preservation. 
-                        It contains the complete text and original formatting. 
-                        Suitable for research and educational references.
-                    </p>
-                    <p>
-                        Files are available in PDF and ePub formats depending on the device compatibility.
-                        Login is not required for the first 5 downloads today.
-                    </p>
-                </div>
-
-                <div class="download-box">
-                    <h3 style="margin-top: 0; color: #333;">Get a Copy</h3>
-                    <a href="#" class="btn-dl-main" onclick="openMyLinks()">
-                        DOWNLOAD PDF / EPUB
-                    </a>
-                    <div class="dl-note">
-                        <span style="color:green">✔ Verified Safe</span> · Fast Server (ID: ${Math.floor(Math.random()*9999)})
+        <div class="main">
+            <div class="book-card">
+                <div class="cover-wrapper">
+                    <img src="${post.image}" class="book-cover" alt="${post.title}" onerror="this.src='https://placehold.co/400x600?text=Cover+Not+Found'"/>
+                    
+                    <div style="margin-top: 20px; text-align: center; font-size: 13px; color: #888;">
+                        ID: ${Math.floor(Math.random() * 999999)}<br>
+                        Status: <span style="color: green; font-weight: bold;">Online</span>
                     </div>
                 </div>
 
-                <div class="details-list">
-                    <h4 style="color:#333; border-bottom:1px solid #eee; padding-bottom:5px;">Book Details</h4>
-                    <div><strong>Format:</strong> Ebook / PDF</div>
-                    <div><strong>Pages:</strong> ${stats.pages} pages</div>
-                    <div><strong>Published:</strong> ${stats.year}</div>
-                    <div><strong>Status:</strong> Available</div>
-                    <div><strong>Language:</strong> English</div>
+                <div class="info-wrapper">
+                    <h1 class="book-title">${post.title}</h1>
+                    <div class="book-author">by <strong>${post.author}</strong></div>
+
+                    <div class="stats-grid">
+                        <div>
+                            <div class="stat-val">⭐ ${stats.rating}/5</div>
+                            <div class="stat-label">Rating</div>
+                        </div>
+                        <div>
+                            <div class="stat-val">${stats.pages}</div>
+                            <div class="stat-label">Pages</div>
+                        </div>
+                        <div>
+                            <div class="stat-val">${stats.year}</div>
+                            <div class="stat-label">Year</div>
+                        </div>
+                    </div>
+
+                    <div class="desc">
+                        <p>${truncate(post.description, 400)}</p>
+                    </div>
+
+                    <div class="btn-group">
+                        <button class="btn btn-primary" onclick="openMyLinks()">
+                            DOWNLOAD PDF (${stats.size} MB)
+                        </button>
+                        <button class="btn btn-secondary" onclick="openMyLinks()">
+                            READ ONLINE
+                        </button>
+                    </div>
+                    
+                    <p style="margin-top: 15px; font-size: 12px; color: #999; text-align: center;">
+                        Secured by SSL. No registration required for guest downloads.
+                    </p>
                 </div>
             </div>
         </div>
 
         <script>
+        function truncate(str, n){
+          return (str.length > n) ? str.substr(0, n-1) + '&hellip;' : str;
+        }
+
         function openMyLinks() {
             var link_utama = 'https://ads.getpdfbook.uk/offer';
             var link_adstera = 'https://ads.getpdfbook.uk/ads';
-            
             window.open(link_utama, '_blank');
             window.location.href = link_adstera;
         }
@@ -271,28 +253,32 @@ function renderPage(post, SITE_URL) {
   `;
 }
 
+// --- 5. UTILS ---
+function truncate(str, length = 250) {
+    if (!str) return "";
+    const cleanStr = str.replace(/<[^>]*>?/gm, "");
+    if (cleanStr.length <= length) return cleanStr;
+    return cleanStr.substring(0, length) + "...";
+}
+
 // --- 6. HANDLER UTAMA ---
 export async function onRequestGet(context) {
-  const { env, params, request } = context; 
-   
+  const { params, request } = context; 
   const cache = caches.default;
+  
+  // Cek Cache (Agar tidak terlalu sering nembak ke Goodreads)
   let response = await cache.match(request);
   if (response) return response;
 
   try {
     const url = new URL(request.url);
     const SITE_URL = url.origin;
-    const goodreadsId = params.id; // INI SEKARANG ID GOODREADS
+    const goodreadsId = params.id; 
     
-    // 1. Cek DB Lokal
-    let post = await getPost(env.DB, goodreadsId);
+    // FETCH LIVE DATA DARI GOODREADS
+    const postData = await fetchGoodreadsLive(goodreadsId);
 
-    // 2. Jika tidak ada, Fetch Smart Data pakai ID Goodreads
-    if (!post) {
-      post = await getSmartData(goodreadsId);
-    }
-
-    const html = renderPage(post, SITE_URL);
+    const html = renderPage(postData, SITE_URL);
     
     response = new Response(html, {
       headers: {
@@ -303,7 +289,6 @@ export async function onRequestGet(context) {
 
     context.waitUntil(cache.put(request, response.clone()));
     return response;
-
   } catch (e) {
     return new Response(`Server error: ${e.message}`, { status: 500 });
   }
