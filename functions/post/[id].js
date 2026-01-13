@@ -45,12 +45,10 @@ async function fetchGoogleBooks(isbn) {
     return { found: false };
 }
 
-// 3. GOODREADS SEARCH (BY ASIN) - [ULTIMATE FIX]
-// Menangani: Redirect ke halaman buku, Urutan atribut acak, dan Fallback.
+// 3. GOODREADS SEARCH (BY ASIN) - [FIX: ANTI-AUTHOR]
 async function scrapeGoodreadsSearch(asin) {
     try {
         const url = `https://www.goodreads.com/search?q=${asin}`;
-        // Ikuti redirect: 'follow' (default)
         const r = await fetch(url, {
             headers: { 
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -60,48 +58,52 @@ async function scrapeGoodreadsSearch(asin) {
         const html = await r.text();
         const finalUrl = r.url;
 
-        // --- SKENARIO 1: REDIRECT KE HALAMAN BUKU ---
-        // Kalau URL berubah jadi /book/show/, berarti kita sudah di halaman detail
+        // A. CEK JIKA REDIRECT KE HALAMAN BUKU (DETAIL PAGE)
         if (finalUrl.includes("/book/show/")) {
-            // Cari H1 (Judul Buku di halaman detail)
-            // Bisa <h1 id="bookTitle"> atau <h1 data-testid="bookTitle">
+            // Di halaman detail, judul biasanya H1
             const h1Match = html.match(/<h1[^>]*>([^<]+)<\/h1>/i);
-            const authorMatch = html.match(/<a class="authorName"[^>]*><span itemprop="name">([^<]+)<\/span>/i) || html.match(/<span itemprop="name">([^<]+)<\/span>/);
+            const authorMatch = html.match(/<a class="authorName"[^>]*>.*?<span itemprop="name">([^<]+)<\/span>/s);
             
             if (h1Match && h1Match[1]) {
-                let title = h1Match[1].trim();
-                let author = authorMatch && authorMatch[1] ? authorMatch[1].trim() : "Goodreads Author";
-                return { found: true, title: title, author: author };
-            }
-            // Fallback: Coba ambil dari meta og:title
-            const metaTitle = html.match(/<meta property="og:title" content="([^"]+)"/);
-            if (metaTitle && metaTitle[1]) {
-                 return { found: true, title: metaTitle[1], author: "Goodreads Author" };
+                return { 
+                    found: true, 
+                    title: h1Match[1].trim(), 
+                    author: authorMatch ? authorMatch[1].trim() : "Goodreads Author" 
+                };
             }
         }
 
-        // --- SKENARIO 2: HALAMAN LIST PENCARIAN (Mobile/Responsive) ---
-        // Target User: <span itemprop="name" role="heading" aria-level="4">JUDUL</span>
-        // Kita pakai Regex "LOOKAHEAD" agar urutan atribut tidak masalah.
-        // Artinya: Cari <span> yang didalamnya ADA 'itemprop="name"' DAN ADA 'role="heading"' DAN ADA 'aria-level="4"'
+        // B. CEK HALAMAN PENCARIAN (SEARCH RESULT)
+        // KITA CARI: <span ... role="heading" ... aria-level="4" ...> JUDUL </span>
+        // Penulis TIDAK PUNYA role="heading", jadi aman.
         
-        const complexRegex = /<span(?=[^>]*itemprop="name")(?=[^>]*role="heading")(?=[^>]*aria-level="4")[^>]*>\s*([^<]+)\s*<\//i;
-        const titleMatch = html.match(complexRegex);
+        // Regex ini mencari span yang PUNYA 'role="heading"' DAN 'aria-level="4"' (Urutan atribut bisa bolak-balik)
+        // Kita tidak peduli 'itemprop' lagi karena itu bikin bingung sama author.
         
+        // Pola 1: role dulu baru aria-level
+        let titleMatch = html.match(/<span[^>]*role="heading"[^>]*aria-level="4"[^>]*>\s*([^<]+)\s*<\//i);
+        
+        // Pola 2: aria-level dulu baru role (Jaga-jaga)
+        if (!titleMatch) {
+            titleMatch = html.match(/<span[^>]*aria-level="4"[^>]*role="heading"[^>]*>\s*([^<]+)\s*<\//i);
+        }
+
+        // Pola 3: Fallback ke Class "bookTitle" (Sangat Spesifik Judul)
+        if (!titleMatch) {
+            titleMatch = html.match(/class="bookTitle"[^>]*>.*?<span[^>]*>([^<]+)<\/span>/s);
+        }
+
+        // Regex untuk Author (Ambil dari class authorName biar gak ketukar)
+        const authorMatch = html.match(/class="authorName"[^>]*>.*?<span itemprop="name">([^<]+)<\/span>/s);
+
         if (titleMatch && titleMatch[1]) {
-             let title = titleMatch[1].trim();
-             // Bersihkan HTML entity
-             title = title.replace(/&amp;/g, '&').replace(/&#39;/g, "'").replace(/&quot;/g, '"');
-             return { found: true, title: title, author: "Amazon Author" };
+            let title = titleMatch[1].trim();
+            // Bersihkan sampah HTML
+            title = title.replace(/&amp;/g, '&').replace(/&#39;/g, "'").replace(/&quot;/g, '"');
+            
+            let author = authorMatch && authorMatch[1] ? authorMatch[1].trim() : "Amazon Author";
+            return { found: true, title: title, author: author };
         }
-
-        // --- SKENARIO 3: FALLBACK KE STRUKTUR LAMA (Desktop Classic) ---
-        // <a class="bookTitle" ...><span itemprop="name">JUDUL</span></a>
-        const classicMatch = html.match(/class="bookTitle"[^>]*>.*?<span itemprop="name">([^<]+)<\/span>/s);
-        if (classicMatch && classicMatch[1]) {
-             return { found: true, title: classicMatch[1].trim(), author: "Amazon Author" };
-        }
-
     } catch (e) { console.log("GR Search Error:", e); }
     return { found: false };
 }
@@ -182,7 +184,7 @@ async function getRedirectData(id) {
 }
 
 // ==================================================================
-// LOGIKA FALLBACK DATA (FINAL FIX JALUR A)
+// LOGIKA FALLBACK DATA (FINAL)
 // ==================================================================
 async function getDataFallback(id) {
   let d = { Judul: "Restricted Document", Image: "", Author: "Unknown Author", Kategori: "General", KodeUnik: id };
@@ -194,12 +196,11 @@ async function getDataFallback(id) {
     if (id.startsWith("A-") || /^B[A-Z0-9]{9}$/.test(id)) {
       const realId = id.startsWith("A-") ? id.substring(2) : id;
       
-      // 1. GAMBAR (Pasti HD)
+      // 1. GAMBAR
       d.Image = `https://images-na.ssl-images-amazon.com/images/P/${realId}.01.LZZZZZZZ.jpg`;
       d.Kategori = "Kindle Ebook";
       
       // 2. JUDUL: Goodreads Search (Pasti Akurat)
-      // Fungsi scrapeGoodreadsSearch sekarang menangani redirect & regex fleksibel
       const grSearch = await scrapeGoodreadsSearch(realId);
       if (grSearch.found) {
           d.Judul = grSearch.title;
@@ -207,7 +208,7 @@ async function getDataFallback(id) {
           return d;
       }
 
-      // 3. JUDUL: Google Search (Cadangan) "amazon book [ASIN]"
+      // 3. JUDUL: Google Search (Cadangan)
       const gSearch = await scrapeGoogleSearch(`amazon book ${realId}`, 'text');
       if (gSearch.found) {
           d.Judul = gSearch.title;
