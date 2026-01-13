@@ -221,8 +221,8 @@ async function getDataFallback(id) {
         const r = await fetch(`https://openlibrary.org/search.json?q=${realId}&fields=title`, { cf: { cacheTtl: 86400 } });
         const j = await r.json();
         if (j.docs && j.docs.length > 0) d.Judul = j.docs[0].title;
-        else d.Judul = "Kindle Secure Content";
-      } catch (e) { d.Judul = "Kindle Secure Content"; }
+        else d.Judul = "Restricted Document";
+      } catch (e) { d.Judul = "Restricted Document"; }
       
       return d;
     }
