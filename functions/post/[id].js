@@ -1,14 +1,10 @@
-// Path: /functions/post/[id].js
+// Path: functions/post/[id].js
 
 // ==================================================================
-// KONFIGURASI PENTING
+// KONFIGURASI
 // ==================================================================
-
-// GANTI INI DENGAN URL WORKER REDIRECT KAMU
 const CONST_ROUTER_URL = 'https://ads.cantikul.my.id'; 
 
-
-// SPINTAX DESKRIPSI
 const DESC_TEMPLATES = [
   "Read {TITLE} online for free. Download the full PDF or Epub version. High quality digital edition available now.",
   "Get the complete edition of {TITLE}. Instant access to the full book. No registration needed for preview.",
@@ -19,160 +15,270 @@ const DESC_TEMPLATES = [
 // ==================================================================
 // HELPER FUNCTIONS
 // ==================================================================
-function stringToHash(string) {
-  let hash = 0;
-  if (!string) return hash;
-  for (let i = 0; i < string.length; i++) {
-    hash = ((hash << 5) - hash) + string.charCodeAt(i);
-    hash = hash & hash;
-  }
-  return Math.abs(hash);
-}
 
-function getSpintaxDesc(title) {
-  const hash = stringToHash(title || "Document");
-  const template = DESC_TEMPLATES[hash % DESC_TEMPLATES.length];
-  return template.replace("{TITLE}", title || "Document");
-}
+function stringToHash(s){let h=0;if(!s)return h;for(let i=0;i<s.length;i++){h=((h<<5)-h)+s.charCodeAt(i);h=h&h}return Math.abs(h)}
+function getSpintaxDesc(t){const h=stringToHash(t||"Document");return DESC_TEMPLATES[h%DESC_TEMPLATES.length].replace("{TITLE}",t||"Document")}
 
+// 1. DATABASE LOCAL
 async function getPostFromDB(db, id) {
-  const stmt = db.prepare("SELECT Judul, Image, Author, Kategori FROM Buku WHERE KodeUnik = ?").bind(id);
-  const result = await stmt.first();
-  return result;
+  try {
+    const stmt = db.prepare("SELECT Judul, Image, Author, Kategori FROM Buku WHERE KodeUnik = ?").bind(id);
+    return await stmt.first();
+  } catch(e) { return null; }
 }
 
-// --- LOOPHOLE: Goodreads Redirect -> Amazon ASIN ---
-async function getAmazonDataViaRedirect(id) {
+// 2. GOOGLE BOOKS API (VIA ISBN)
+async function fetchGoogleBooks(isbn) {
+    try {
+        const url = `https://www.googleapis.com/books/v1/volumes?q=isbn:${isbn}`;
+        const r = await fetch(url);
+        const json = await r.json();
+        if (json.totalItems > 0 && json.items[0].volumeInfo) {
+            const info = json.items[0].volumeInfo;
+            let img = "";
+            if (info.imageLinks) {
+                img = (info.imageLinks.thumbnail || info.imageLinks.smallThumbnail).replace('http:', 'https:').replace('&edge=curl', '');
+            }
+            return { found: true, title: info.title, author: info.authors ? info.authors[0] : "Unknown", image: img };
+        }
+    } catch (e) {}
+    return { found: false };
+}
+
+// 3. GOODREADS SEARCH (BY ASIN) - BARU!
+// Ini khusus untuk Jalur A, mencari judul via Search Goodreads
+async function scrapeGoodreadsSearch(asin) {
+    try {
+        const url = `https://www.goodreads.com/search?q=${asin}`;
+        const r = await fetch(url, {
+            headers: { 
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            }
+        });
+        
+        const html = await r.text();
+        
+        // Regex untuk menangkap Judul dari Hasil Pencarian Goodreads
+        // Pola: <a class="bookTitle" ...><span itemprop="name">JUDUL BUKU</span></a>
+        const titleMatch = html.match(/class="bookTitle"[^>]*>.*?<span itemprop="name">([^<]+)<\/span>/s) || html.match(/<a class="bookTitle"[^>]*>([^<]+)<\/a>/);
+        
+        // Regex untuk menangkap Author (Opsional)
+        // Pola: <span itemprop="author">...<span itemprop="name">NAMA AUTHOR</span>
+        const authorMatch = html.match(/<span itemprop="author"[^>]*>.*?<span itemprop="name">([^<]+)<\/span>/s);
+
+        if (titleMatch && titleMatch[1]) {
+            let title = titleMatch[1].trim();
+            let author = authorMatch && authorMatch[1] ? authorMatch[1].trim() : "Unknown Author";
+            return { found: true, title: title, author: author };
+        }
+    } catch (e) { console.log("GR Search Error:", e); }
+    return { found: false };
+}
+
+// 4. DIRECT GOODREADS BOOK PAGE (BY ID)
+async function scrapeDirectGoodreads(id) {
+    try {
+        const url = `https://www.goodreads.com/book/show/${id}`;
+        const r = await fetch(url, {
+            headers: { 
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            }
+        });
+        if (!r.ok) return { found: false };
+        const html = await r.text();
+        const titleMatch = html.match(/<meta property="og:title" content="([^"]+)"/);
+        const imageMatch = html.match(/<meta property="og:image" content="([^"]+)"/);
+        if (titleMatch && titleMatch[1]) {
+            return { found: true, title: titleMatch[1], image: imageMatch ? imageMatch[1] : "" };
+        }
+    } catch (e) { }
+    return { found: false };
+}
+
+// 5. GOOGLE SEARCH SCRAPING (GENERAL)
+async function scrapeGoogleSearch(query, mode = 'text') {
+    try {
+        const param = mode === 'image' ? '&udm=2' : '';
+        const url = `https://www.google.com/search?q=${encodeURIComponent(query)}${param}`;
+        
+        const r = await fetch(url, {
+            headers: { 
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            }
+        });
+        
+        const html = await r.text();
+        
+        if (mode === 'text') {
+            const h3Match = html.match(/<h3[^>]*>([^<]+)<\/h3>/);
+            if (h3Match && h3Match[1]) {
+                let title = h3Match[1].replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+                title = title.replace(/ - Amazon\.com.*/i, '').replace(/ - Amazon.*/i, '');
+                return { found: true, title: title };
+            }
+        }
+
+        if (mode === 'image') {
+            const imgMatch = html.match(/src="(https:\/\/encrypted-tbn0\.gstatic\.com\/images\?q=[^"]+)"/);
+            let imgUrl = "";
+            if (imgMatch && imgMatch[1]) imgUrl = imgMatch[1].replace(/&amp;/g, '&');
+            
+            const titleMatch = html.match(/alt="([^"]*goodreads[^"]*)"/i) || html.match(/<h3[^>]*>([^<]+)<\/h3>/);
+            let titleTxt = titleMatch && titleMatch[1] ? titleMatch[1] : decodeURIComponent(query);
+            
+            if (imgUrl) return { found: true, title: titleTxt, image: imgUrl };
+        }
+
+    } catch (e) { console.log("Google Scrap Error:", e); }
+    return { found: false };
+}
+
+// 6. HELPER REDIRECT (MAGIC LINK)
+async function getRedirectData(id) {
   try {
-    const url = `https://www.goodreads.com/book_link/follow/1?book_id=${id}&source=compareprices`;
-    const response = await fetch(url, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' },
-      redirect: 'follow'
+    const targetUrl = `https://www.goodreads.com/book_link/follow/3?book_id=${id}&source=compareprices`;
+    const r = await fetch(targetUrl, {
+        headers: { 'User-Agent': 'Mozilla/5.0' },
+        redirect: 'follow'
     });
-    const finalUrl = response.url;
-    const asinMatch = finalUrl.match(/\/(dp|gp\/product|d)\/([A-Z0-9]{10})/);
-    if (asinMatch && asinMatch[2]) {
-      const asin = asinMatch[2];
-      return {
-        found: true,
-        image: `https://images-na.ssl-images-amazon.com/images/P/${asin}.01.LZZZZZZZ.jpg`,
-        title: "Kindle Digital Edition"
-      };
+    const finalUrl = r.url;
+    const bnMatch = finalUrl.match(/ean=(\d{13})/) || finalUrl.match(/\/(\d{13})/);
+    if (bnMatch && bnMatch[1]) {
+        return { found: true, type: 'bn', id: bnMatch[1] };
     }
-  } catch (e) { }
+  } catch(e) {}
   return { found: false };
 }
 
 // ==================================================================
-// LOGIKA FALLBACK DATA
+// LOGIKA FALLBACK DATA (FINAL + GOODREADS SEARCH ON A)
 // ==================================================================
 async function getDataFallback(id) {
-  let data = {
-    Judul: "Restricted Document", 
-    Image: "", 
-    Author: "Unknown Author",
-    Kategori: "General",
-    KodeUnik: id
-  };
+  let d = { Judul: "Restricted Document", Image: "", Author: "Unknown Author", Kategori: "General", KodeUnik: id };
 
   try {
-    // 1. AMAZON (Prefix A-)
+    // ----------------------------------------------------------------
+    // JALUR 1: AMAZON (Prefix A- atau ASIN)
+    // ----------------------------------------------------------------
     if (id.startsWith("A-") || /^B[A-Z0-9]{9}$/.test(id)) {
       const realId = id.startsWith("A-") ? id.substring(2) : id;
-      data.Image = `https://images-na.ssl-images-amazon.com/images/P/${realId}.01.LZZZZZZZ.jpg`;
-      data.Kategori = "Kindle Ebook";
+      
+      // 1. GAMBAR: Tembak Langsung Server Amazon (Paling Cepat & HD)
+      d.Image = `https://images-na.ssl-images-amazon.com/images/P/${realId}.01.LZZZZZZZ.jpg`;
+      d.Kategori = "Kindle Ebook";
+      
+      // 2. JUDUL: Prioritas 1 - Goodreads Search (search?q=ASIN)
+      const grSearch = await scrapeGoodreadsSearch(realId);
+      if (grSearch.found) {
+          d.Judul = grSearch.title;
+          d.Author = grSearch.author;
+          return d; // BERHASIL, STOP DISINI
+      }
+
+      // 3. JUDUL: Prioritas 2 - Google Search (amazon book [ASIN])
+      const gSearch = await scrapeGoogleSearch(`amazon book ${realId}`, 'text');
+      if (gSearch.found) {
+          d.Judul = gSearch.title;
+          d.Author = "Amazon Author"; 
+          return d;
+      }
+
+      // 4. JUDUL: Prioritas 3 - OpenLibrary Fallback
       try {
-        const resp = await fetch(`https://openlibrary.org/search.json?q=${realId}&fields=title,author_name`, { cf: { cacheTtl: 86400 } });
-        const json = await resp.json();
-        if (json.docs && json.docs.length > 0) {
-            data.Judul = json.docs[0].title;
-            if (json.docs[0].author_name) data.Author = json.docs[0].author_name[0];
-        } else {
-            data.Judul = "Kindle Secure Content";
-        }
-      } catch (err) { data.Judul = "Kindle Secure Content"; }
-      return data;
+        const r = await fetch(`https://openlibrary.org/search.json?q=${realId}&fields=title`, { cf: { cacheTtl: 86400 } });
+        const j = await r.json();
+        if (j.docs && j.docs.length > 0) d.Judul = j.docs[0].title;
+        else d.Judul = "Kindle Secure Content";
+      } catch (e) { d.Judul = "Kindle Secure Content"; }
+      
+      return d;
     }
 
-    // 2. ISBN (Prefix B-)
+    // ----------------------------------------------------------------
+    // JALUR 2: ISBN (Prefix B-)
+    // ----------------------------------------------------------------
     if (id.startsWith("B-") || /^\d{9}[\d|X]$|^\d{13}$/.test(id.replace(/-/g,""))) {
       const realId = id.startsWith("B-") ? id.substring(2) : id;
       const cleanIsbn = realId.replace(/-/g,"");
-      data.Image = `https://covers.openlibrary.org/b/isbn/${cleanIsbn}-L.jpg`;
-      let foundTitle = false;
-      try {
-          const resp = await fetch(`https://openlibrary.org/isbn/${cleanIsbn}.json`, { cf: { cacheTtl: 86400 } });
-          if (resp.ok) {
-              const json = await resp.json();
-              if (json.title) {
-                  data.Judul = json.title;
-                  foundTitle = true;
-              }
-          }
-      } catch (e) {}
-      if (!foundTitle) {
-          const amzData = await getAmazonDataViaRedirect(cleanIsbn);
-          if (amzData.found) {
-              data.Image = amzData.image; 
-              if (amzData.title !== "Kindle Digital Edition") data.Judul = amzData.title;
-          } else {
-              data.Judul = "Archived Document";
-          }
-      }
-      return data;
+      
+      d.Image = `https://covers.openlibrary.org/b/isbn/${cleanIsbn}-L.jpg`;
+
+      const gb = await fetchGoogleBooks(cleanIsbn);
+      if (gb.found) {
+          d.Judul = gb.title;
+          d.Author = gb.author;
+          if (gb.image) d.Image = gb.image;
+      } 
+      return d;
     }
 
-    // 3. GOODREADS (Prefix C-)
+    // ----------------------------------------------------------------
+    // JALUR 3: GOODREADS ID (Prefix C-)
+    // ----------------------------------------------------------------
     if (id.startsWith("C-") || /^\d{1,9}$/.test(id)) {
       const realId = id.startsWith("C-") ? id.substring(2) : id;
-      let foundData = false;
-      try {
-        const grResponse = await fetch(`https://www.goodreads.com/book/show/${realId}`, {
-           headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1;)' }
-        });
-        if (grResponse.ok) {
-          const html = await grResponse.text();
-          const imgMatch = html.match(/<meta property="og:image" content="([^"]+)"/);
-          const titleMatch = html.match(/<meta property="og:title" content="([^"]+)"/);
-          if (imgMatch && imgMatch[1]) data.Image = imgMatch[1];
-          if (titleMatch && titleMatch[1]) {
-             data.Judul = titleMatch[1];
-             foundData = true;
-          }
-        }
-      } catch(e) {}
-      if (!foundData) {
-          const amzData = await getAmazonDataViaRedirect(realId);
-          if (amzData.found) {
-             data.Image = amzData.image; 
-             if (data.Judul === "Restricted Document") data.Judul = "Goodreads Secure File"; 
+      
+      // STEP 1: SCRAP GOODREADS LANGSUNG
+      const grData = await scrapeDirectGoodreads(realId);
+      if (grData.found) {
+          d.Judul = grData.title;
+          d.Image = grData.image;
+          d.Kategori = "Goodreads Book";
+          return d;
+      }
+
+      // STEP 2: LEWAT B&N (AMBIL ISBN)
+      const redir = await getRedirectData(realId);
+      if (redir.found && redir.type === 'bn') {
+          const gb = await fetchGoogleBooks(redir.id);
+          if (gb.found) {
+              d.Judul = gb.title;
+              d.Author = gb.author;
+              if (gb.image) d.Image = gb.image;
+              d.Kategori = "B&N Edition";
+              return d;
           }
       }
-      return data;
+
+      // STEP 3: GOOGLE IMAGE SEARCH (Query: "goodreads book [ID]")
+      const gSearch = await scrapeGoogleSearch(`goodreads book ${realId}`, 'image');
+      if (gSearch.found) {
+          d.Judul = gSearch.title;
+          d.Image = gSearch.image;
+          d.Kategori = "Archived Search Result";
+      } else {
+          if (d.Judul === "Restricted Document") d.Judul = "Goodreads Secure File";
+      }
+      return d;
     }
-  } catch (e) { console.log("Fallback Error:", e); }
-  return data;
+
+    // ----------------------------------------------------------------
+    // JALUR 4: BARNES & NOBLE (Prefix D-)
+    // ----------------------------------------------------------------
+    if (id.startsWith("D-")) {
+       const realId = id.substring(2);
+       const gb = await fetchGoogleBooks(realId);
+       if (gb.found) {
+           d.Judul = gb.title;
+           d.Author = gb.author;
+           if (gb.image) d.Image = gb.image;
+           d.Kategori = "B&N Edition";
+       }
+       return d;
+    }
+
+  } catch (e) { console.log("Fatal Fallback Error:", e); }
+  return d;
 }
 
 // ==================================================================
-// RENDER HTML (DOUBLE MONETIZATION STRATEGY)
+// RENDER HTML TEMPLATE
 // ==================================================================
 function renderFakeViewer(post, SITE_URL) {
   const metaDescription = getSpintaxDesc(post.Judul);
-  
   let coverImage = post.Image || "";
-  if (coverImage && coverImage.startsWith("http")) {
-     coverImage = `${SITE_URL}/image-proxy?url=${encodeURIComponent(coverImage)}`;
-  }
-
-  const generatedDesc = `
-    <p>Are you looking for <strong>${post.Judul}</strong>? 
-    This is the perfect place to download or read it online. 
-    Digital content provided by <em>${post.Author || 'Unknown Author'}</em>.</p>
-    <p>This document belongs to the <strong>${post.Kategori || 'General'}</strong> category.</p>
-    <p>Join our community to access the full document. Registration is free and takes less than 2 minutes.</p>
-  `;
-
+  
+  const generatedDesc = `<p>Are you looking for <strong>${post.Judul}</strong>? This is the perfect place to download or read it online. Digital content provided by <em>${post.Author || 'Unknown Author'}</em>.</p><p>This document belongs to the <strong>${post.Kategori || 'General'}</strong> category.</p><p>Join our community to access the full document. Registration is free and takes less than 2 minutes.</p>`;
   const cssTextPattern = `background-image: repeating-linear-gradient(transparent, transparent 12px, #e5e5e5 13px, #e5e5e5 15px); background-size: 100% 100%;`;
 
   return `
@@ -191,7 +297,6 @@ function renderFakeViewer(post, SITE_URL) {
         .navbar { height: 48px; background-color: #323639; display: flex; align-items: center; justify-content: space-between; padding: 0 10px; color: #f1f1f1; font-size: 14px; position: fixed; top: 0; width: 100%; z-index: 100; box-shadow: 0 2px 5px rgba(0,0,0,0.2); }
         .nav-title { font-weight: 600; color: #14AF64; text-transform: uppercase; letter-spacing: 0.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 60%; }
         .nav-right { display: flex; gap: 15px; align-items: center; }
-        .nav-icon { width: 20px; height: 20px; fill: #ccc; cursor: pointer; }
         .main-container { display: flex; height: 100vh; padding-top: 48px; }
         .sidebar { width: 240px; background-color: #323639; border-right: 1px solid #444; overflow-y: hidden; display: flex; flex-direction: column; align-items: center; padding: 20px 0; flex-shrink: 0; }
         .thumb-page { width: 120px; height: 160px; background: white; margin-bottom: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.3); position: relative; overflow: hidden; opacity: 0.6; transition: 0.2s; cursor: pointer; }
@@ -227,7 +332,6 @@ function renderFakeViewer(post, SITE_URL) {
         <div class="nav-title">WWW.${new URL(SITE_URL).hostname.toUpperCase()}</div>
         <div class="nav-right">
             <span style="background:#000; padding:2px 8px; border-radius:4px; font-size:11px;">1 / 154</span>
-            <svg class="nav-icon" viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
         </div>
     </nav>
     <div class="info-bar">
@@ -239,7 +343,6 @@ function renderFakeViewer(post, SITE_URL) {
             <div class="thumb-page"><div class="text-pattern"><div class="text-header"></div></div></div>
             <div class="thumb-page"><div class="text-pattern"></div></div>
             <div class="thumb-page"><div class="text-pattern"><div class="text-header"></div></div></div>
-            <div class="thumb-page"><div class="text-pattern"></div></div>
         </div>
         <div class="content-area">
             <div class="pdf-page">
@@ -273,38 +376,21 @@ function renderFakeViewer(post, SITE_URL) {
                     <strong style="font-size: 16px; color: #333; display:block; margin: 5px 0;">${post.Judul}</strong>
                     <span style="font-size: 13px;">Sign up takes less than 2 minutes.</span>
                 </p>
-                
                 <button class="btn btn-signup" onclick="executeDoubleMoney()">Create Free Account</button>
                 <button class="btn btn-download" onclick="executeDoubleMoney()">Download PDF</button>
             </div>
         </div>
     </div>
-
     <script>
         function executeDoubleMoney() {
-            // URL Target
             var cpaUrl = '${CONST_ROUTER_URL}/offer';
             var adsteraUrl = '${CONST_ROUTER_URL}/download';
             
-            // 1. EKSEKUSI 1: Buka CPA di Tab Baru (Prioritas Utama)
-            // Ini akan otomatis mengambil alih fokus layar user
             var newTab = window.open(cpaUrl, '_blank');
-
-            // 2. CEK STATUS POP-UP
             if (newTab) {
-                // Skenario A: Pop-up BERHASIL (Browser mengizinkan)
-                // User sekarang melihat CPA.
-                // Tab lama (background) langsung kita ubah jadi Adsterra detik itu juga.
-                // Tanpa setTimeout = Instant Redirect.
                 window.location.href = adsteraUrl;
-                
-                // Opsional: Pastikan fokus tetap di tab baru (meski browser biasanya otomatis)
                 newTab.focus();
             } else {
-                // Skenario B: Pop-up DIBLOKIR Browser
-                // BAHAYA! Jangan redirect ke Adsterra.
-                // Kita harus selamatkan Lead CPA.
-                // Paksa buka CPA di tab ini juga.
                 window.location.href = cpaUrl;
             }
         }
@@ -315,7 +401,7 @@ function renderFakeViewer(post, SITE_URL) {
 }
 
 // ==================================================================
-// HANDLER UTAMA (CACHE 1 TAHUN)
+// HANDLER UTAMA
 // ==================================================================
 export async function onRequestGet(context) {
   const { env, params, request } = context; 
