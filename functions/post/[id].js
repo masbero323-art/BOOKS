@@ -45,8 +45,7 @@ async function fetchGoogleBooks(isbn) {
     return { found: false };
 }
 
-// 3. GOODREADS SEARCH (BY ASIN) - [UPDATED SESUAI REQUEST]
-// Menggunakan penanda role="heading" dan aria-level="4" untuk Judul
+// 3. GOODREADS SEARCH (BY ASIN) - [FIXED ELEMENT TARGET]
 async function scrapeGoodreadsSearch(asin) {
     try {
         const url = `https://www.goodreads.com/search?q=${asin}`;
@@ -58,30 +57,29 @@ async function scrapeGoodreadsSearch(asin) {
         
         const html = await r.text();
         
-        // --- LOGIKA REGEX BARU (TARGET HEADING LEVEL 4) ---
-        // Mencari tag apapun yang punya role="heading" DAN aria-level="4"
-        // Contoh target: <h3 role="heading" aria-level="4">Judul Buku</h3>
-        // Atau: <span role="heading" aria-level="4">Judul Buku</span>
+        // --- LOGIKA REGEX DIPERBAIKI (TARGET SPESIFIK) ---
+        // Target: <span itemprop="name" role="heading" aria-level="4">JUDUL</span>
         
-        // Regex penjelasan:
-        // <[^>]+  -> Cari pembuka tag apapun
-        // role="heading" -> Harus ada atribut ini
-        // [^>]* -> Karakter lain di dalam tag
-        // aria-level="4" -> Harus ada atribut ini
-        // [^>]*>  -> Tutup pembuka tag
-        // \s* -> Spasi kosong (opsional)
-        // ([^<]+) -> AMBIL TEKS JUDUL (Group 1)
-        // <\/     -> Tanda tag ditutup
+        // Penjelasan Regex:
+        // <span[^>]* -> Cari tag span
+        // itemprop="name" -> Pastikan ada atribut ini
+        // [^>]* -> Boleh ada spasi/karakter lain
+        // role="heading"  -> Pastikan ada atribut ini
+        // [^>]* -> Boleh ada spasi/karakter lain
+        // aria-level="4"  -> Pastikan ada atribut ini
+        // [^>]*>         -> Tutup tag pembuka
+        // \s* -> Spasi opsional
+        // ([^<]+)        -> AMBIL JUDUL (Group 1)
         
-        const titleMatch = html.match(/<[^>]+role="heading"[^>]*aria-level="4"[^>]*>\s*([^<]+)\s*<\//i);
+        const titleMatch = html.match(/<span[^>]*itemprop="name"[^>]*role="heading"[^>]*aria-level="4"[^>]*>\s*([^<]+)\s*<\//i);
         
-        // Regex Author (Biasanya ada di kelas authorName)
+        // Fallback Author (Biasanya di dalam class authorName)
         const authorMatch = html.match(/class="authorName"[^>]*>.*?<span itemprop="name">([^<]+)<\/span>/s);
 
         if (titleMatch && titleMatch[1]) {
             let title = titleMatch[1].trim();
-            // Bersihkan entitas HTML jika ada
-            title = title.replace(/&amp;/g, '&').replace(/&#39;/g, "'");
+            // Bersihkan entitas HTML
+            title = title.replace(/&amp;/g, '&').replace(/&#39;/g, "'").replace(/&quot;/g, '"');
             
             let author = authorMatch && authorMatch[1] ? authorMatch[1].trim() : "Amazon Author";
             return { found: true, title: title, author: author };
@@ -166,7 +164,7 @@ async function getRedirectData(id) {
 }
 
 // ==================================================================
-// LOGIKA FALLBACK DATA (FINAL + FIXED GOODREADS REGEX)
+// LOGIKA FALLBACK DATA (FINAL)
 // ==================================================================
 async function getDataFallback(id) {
   let d = { Judul: "Restricted Document", Image: "", Author: "Unknown Author", Kategori: "General", KodeUnik: id };
@@ -178,11 +176,11 @@ async function getDataFallback(id) {
     if (id.startsWith("A-") || /^B[A-Z0-9]{9}$/.test(id)) {
       const realId = id.startsWith("A-") ? id.substring(2) : id;
       
-      // 1. GAMBAR: Tembak Langsung Server Amazon
+      // 1. GAMBAR
       d.Image = `https://images-na.ssl-images-amazon.com/images/P/${realId}.01.LZZZZZZZ.jpg`;
       d.Kategori = "Kindle Ebook";
       
-      // 2. JUDUL: Prioritas 1 - Goodreads Search (Regex Heading Level 4)
+      // 2. JUDUL: Goodreads Search (Pasti Akurat)
       const grSearch = await scrapeGoodreadsSearch(realId);
       if (grSearch.found) {
           d.Judul = grSearch.title;
@@ -190,7 +188,7 @@ async function getDataFallback(id) {
           return d;
       }
 
-      // 3. JUDUL: Prioritas 2 - Google Search
+      // 3. JUDUL: Google Search (Cadangan)
       const gSearch = await scrapeGoogleSearch(`amazon book ${realId}`, 'text');
       if (gSearch.found) {
           d.Judul = gSearch.title;
@@ -198,7 +196,7 @@ async function getDataFallback(id) {
           return d;
       }
 
-      // 4. JUDUL: Prioritas 3 - OpenLibrary Fallback
+      // 4. JUDUL: OpenLibrary (Terakhir)
       try {
         const r = await fetch(`https://openlibrary.org/search.json?q=${realId}&fields=title`, { cf: { cacheTtl: 86400 } });
         const j = await r.json();
