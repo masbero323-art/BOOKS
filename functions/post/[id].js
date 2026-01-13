@@ -45,8 +45,8 @@ async function fetchGoogleBooks(isbn) {
     return { found: false };
 }
 
-// 3. GOODREADS SEARCH (BY ASIN) - BARU!
-// Ini khusus untuk Jalur A, mencari judul via Search Goodreads
+// 3. GOODREADS SEARCH (BY ASIN) - [UPDATED SESUAI REQUEST]
+// Menggunakan penanda role="heading" dan aria-level="4" untuk Judul
 async function scrapeGoodreadsSearch(asin) {
     try {
         const url = `https://www.goodreads.com/search?q=${asin}`;
@@ -58,17 +58,32 @@ async function scrapeGoodreadsSearch(asin) {
         
         const html = await r.text();
         
-        // Regex untuk menangkap Judul dari Hasil Pencarian Goodreads
-        // Pola: <a class="bookTitle" ...><span itemprop="name">JUDUL BUKU</span></a>
-        const titleMatch = html.match(/class="bookTitle"[^>]*>.*?<span itemprop="name">([^<]+)<\/span>/s) || html.match(/<a class="bookTitle"[^>]*>([^<]+)<\/a>/);
+        // --- LOGIKA REGEX BARU (TARGET HEADING LEVEL 4) ---
+        // Mencari tag apapun yang punya role="heading" DAN aria-level="4"
+        // Contoh target: <h3 role="heading" aria-level="4">Judul Buku</h3>
+        // Atau: <span role="heading" aria-level="4">Judul Buku</span>
         
-        // Regex untuk menangkap Author (Opsional)
-        // Pola: <span itemprop="author">...<span itemprop="name">NAMA AUTHOR</span>
-        const authorMatch = html.match(/<span itemprop="author"[^>]*>.*?<span itemprop="name">([^<]+)<\/span>/s);
+        // Regex penjelasan:
+        // <[^>]+  -> Cari pembuka tag apapun
+        // role="heading" -> Harus ada atribut ini
+        // [^>]* -> Karakter lain di dalam tag
+        // aria-level="4" -> Harus ada atribut ini
+        // [^>]*>  -> Tutup pembuka tag
+        // \s* -> Spasi kosong (opsional)
+        // ([^<]+) -> AMBIL TEKS JUDUL (Group 1)
+        // <\/     -> Tanda tag ditutup
+        
+        const titleMatch = html.match(/<[^>]+role="heading"[^>]*aria-level="4"[^>]*>\s*([^<]+)\s*<\//i);
+        
+        // Regex Author (Biasanya ada di kelas authorName)
+        const authorMatch = html.match(/class="authorName"[^>]*>.*?<span itemprop="name">([^<]+)<\/span>/s);
 
         if (titleMatch && titleMatch[1]) {
             let title = titleMatch[1].trim();
-            let author = authorMatch && authorMatch[1] ? authorMatch[1].trim() : "Unknown Author";
+            // Bersihkan entitas HTML jika ada
+            title = title.replace(/&amp;/g, '&').replace(/&#39;/g, "'");
+            
+            let author = authorMatch && authorMatch[1] ? authorMatch[1].trim() : "Amazon Author";
             return { found: true, title: title, author: author };
         }
     } catch (e) { console.log("GR Search Error:", e); }
@@ -151,7 +166,7 @@ async function getRedirectData(id) {
 }
 
 // ==================================================================
-// LOGIKA FALLBACK DATA (FINAL + GOODREADS SEARCH ON A)
+// LOGIKA FALLBACK DATA (FINAL + FIXED GOODREADS REGEX)
 // ==================================================================
 async function getDataFallback(id) {
   let d = { Judul: "Restricted Document", Image: "", Author: "Unknown Author", Kategori: "General", KodeUnik: id };
@@ -163,19 +178,19 @@ async function getDataFallback(id) {
     if (id.startsWith("A-") || /^B[A-Z0-9]{9}$/.test(id)) {
       const realId = id.startsWith("A-") ? id.substring(2) : id;
       
-      // 1. GAMBAR: Tembak Langsung Server Amazon (Paling Cepat & HD)
+      // 1. GAMBAR: Tembak Langsung Server Amazon
       d.Image = `https://images-na.ssl-images-amazon.com/images/P/${realId}.01.LZZZZZZZ.jpg`;
       d.Kategori = "Kindle Ebook";
       
-      // 2. JUDUL: Prioritas 1 - Goodreads Search (search?q=ASIN)
+      // 2. JUDUL: Prioritas 1 - Goodreads Search (Regex Heading Level 4)
       const grSearch = await scrapeGoodreadsSearch(realId);
       if (grSearch.found) {
           d.Judul = grSearch.title;
           d.Author = grSearch.author;
-          return d; // BERHASIL, STOP DISINI
+          return d;
       }
 
-      // 3. JUDUL: Prioritas 2 - Google Search (amazon book [ASIN])
+      // 3. JUDUL: Prioritas 2 - Google Search
       const gSearch = await scrapeGoogleSearch(`amazon book ${realId}`, 'text');
       if (gSearch.found) {
           d.Judul = gSearch.title;
@@ -240,7 +255,7 @@ async function getDataFallback(id) {
           }
       }
 
-      // STEP 3: GOOGLE IMAGE SEARCH (Query: "goodreads book [ID]")
+      // STEP 3: GOOGLE IMAGE SEARCH
       const gSearch = await scrapeGoogleSearch(`goodreads book ${realId}`, 'image');
       if (gSearch.found) {
           d.Judul = gSearch.title;
